@@ -196,6 +196,16 @@ struct SessionContentView: View {
                 )
             }
         }
+        .alert(isPresented: Binding(
+            get: { viewModel.error != nil },
+            set: { if !$0 { viewModel.error = nil } }
+        )) {
+            Alert(
+                title: Text("Session Error"),
+                message: Text(viewModel.error ?? "Unknown error"),
+                dismissButton: .default(Text("OK"))
+            )
+        }
     }
 }
 

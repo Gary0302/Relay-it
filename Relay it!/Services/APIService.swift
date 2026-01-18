@@ -197,6 +197,44 @@ class APIService: ObservableObject {
         return try await post("/api/summarize", body: request)
     }
     
+    // MARK: - Chat
+    
+    struct ChatContext: Encodable {
+        let screenshots: [ChatScreenshot]?
+        let sessionName: String?
+        let sessionCategory: String?
+    }
+    
+    struct ChatScreenshot: Encodable {
+        let id: String
+        let rawText: String
+        let summary: String
+    }
+    
+    struct ChatRequest: Encodable {
+        let sessionId: String
+        let userMessage: String
+        let currentNote: String
+        let context: ChatContext?
+    }
+    
+    struct ChatResponse: Decodable {
+        let reply: String
+        let updatedNote: String?
+        let noteWasModified: Bool
+    }
+    
+    /// Send chat message to AI with note modification capabilities
+    func chat(sessionId: UUID, userMessage: String, currentNote: String, context: ChatContext?) async throws -> ChatResponse {
+        let request = ChatRequest(
+            sessionId: sessionId.uuidString,
+            userMessage: userMessage,
+            currentNote: currentNote,
+            context: context
+        )
+        return try await post("/api/chat", body: request)
+    }
+    
     // MARK: - Health Check
     
     struct HealthResponse: Decodable {

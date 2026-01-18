@@ -406,11 +406,13 @@ class InsertBuilder<R: Decodable> {
     private let table: String
     private let body: Data
     private var queryItems: [URLQueryItem] = []
-    
+
     init<T: Encodable>(client: SupabaseClient, table: String, values: T) {
         self.client = client
         self.table = table
-        self.body = (try? JSONEncoder().encode(values)) ?? Data()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        self.body = (try? encoder.encode(values)) ?? Data()
     }
     
     func select(_ columns: String = "*") -> Self {
@@ -436,11 +438,13 @@ class UpdateBuilder<R: Decodable> {
     private let table: String
     private let body: Data
     private var queryItems: [URLQueryItem] = []
-    
+
     init<T: Encodable>(client: SupabaseClient, table: String, values: T) {
         self.client = client
         self.table = table
-        self.body = (try? JSONEncoder().encode(values)) ?? Data()
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        self.body = (try? encoder.encode(values)) ?? Data()
     }
     
     func eq(_ column: String, value: String) -> Self {

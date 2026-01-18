@@ -44,8 +44,52 @@ struct SummaryPanel: View {
             } else {
                 NoteEditorView(
                     content: $viewModel.noteContent,
-                    isSaving: viewModel.isNoteSaving
+                    isSaving: viewModel.isNoteSaving,
+                    aiHighlightActive: viewModel.aiHighlightActive,
+                    aiHighlightStartIndex: viewModel.aiHighlightStartIndex
                 )
+                .onDisappear {
+                    Task {
+                        await viewModel.saveNote()
+                    }
+                }
+            }
+            
+            // Chat messages display - always show area to prevent layout shift
+            if !viewModel.chatMessages.isEmpty {
+                Divider()
+                    .background(Color.themeDivider)
+
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(viewModel.chatMessages) { message in
+                                ChatMessageView(isUser: message.isUser, message: message.text)
+                                    .id(message.id)
+                            }
+                        }
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
+                    }
+                    .frame(maxHeight: 200)
+                    .background(Color.themeBackground)
+                    .onAppear {
+                        // Scroll to last message on appear
+                        if let lastMessage = viewModel.chatMessages.last {
+                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                        }
+                    }
+                    .onChange(of: viewModel.chatMessages.count) { _, _ in
+                        // Scroll to new message with slight delay for smooth animation
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            if let lastMessage = viewModel.chatMessages.last {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                                }
+                            }
+                        }
+                    }
+                }
             }
             
             Divider()

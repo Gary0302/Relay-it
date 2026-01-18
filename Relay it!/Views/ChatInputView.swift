@@ -12,29 +12,31 @@ struct ChatInputView: View {
     let isLoading: Bool
     let selectedCount: Int
     let onSend: () -> Void
-    
+
+    @FocusState private var isInputFocused: Bool
+
     private var placeholder: String {
         if selectedCount > 0 {
             return "Ask about \(selectedCount) selected item\(selectedCount > 1 ? "s" : "")..."
         }
         return "Ask about your captures..."
     }
-    
+
     var body: some View {
         VStack(spacing: 4) {
-            // Selection hint
-            if selectedCount > 0 {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.themeAccent)
-                    Text("\(selectedCount) selected — questions will focus on these items")
-                        .font(.caption)
-                        .foregroundStyle(Color.themeTextSecondary)
-                    Spacer()
-                }
-                .padding(.horizontal)
-                .padding(.top, 4)
+            // Selection hint - fixed height to prevent layout shift
+            HStack {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color.themeAccent)
+                Text("\(selectedCount) selected — questions will focus on these items")
+                    .font(.caption)
+                    .foregroundStyle(Color.themeTextSecondary)
+                Spacer()
             }
+            .padding(.horizontal)
+            .padding(.top, 4)
+            .opacity(selectedCount > 0 ? 1 : 0)
+            .frame(height: selectedCount > 0 ? nil : 0)
 
             HStack(spacing: 12) {
                 TextField(placeholder, text: $message)
@@ -43,23 +45,37 @@ struct ChatInputView: View {
                     .padding(10)
                     .background(Color.themeInput)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .focused($isInputFocused)
                     .onSubmit {
                         if !message.isEmpty && !isLoading {
                             onSend()
+                            // Maintain focus after sending
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                isInputFocused = true
+                            }
                         }
                     }
 
-                Button(action: onSend) {
-                    if isLoading {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                            .tint(Color.themeAccent)
-                            .frame(width: 24, height: 24)
-                    } else {
+                Button(action: {
+                    onSend()
+                    // Maintain focus after sending
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        isInputFocused = true
+                    }
+                }) {
+                    ZStack {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.title2)
                             .foregroundStyle(message.isEmpty ? Color.themeTextTertiary : Color.themeAccent)
+                            .opacity(isLoading ? 0 : 1)
+
+                        if isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(Color.themeAccent)
+                        }
                     }
+                    .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .disabled(message.isEmpty || isLoading)

@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftUI
+import Combine
 
 /// Chat message model with timestamp for timeline ordering
 struct ChatMessage: Identifiable {
@@ -68,24 +69,35 @@ class SessionViewModel: ObservableObject {
     
     // Note editor state
     @Published var note: SessionNote?
-    @Published var noteContent: String = "" {
-        didSet {
-            // Debounced auto-save (skip during initial load)
-            if !isLoadingNote {
-                saveNoteDebounced()
-            }
-        }
-    }
+    @Published var noteContent: String = ""
     @Published var isNoteSaving = false
-    private var isLoadingNote = false
+    @Published var aiHighlightStartIndex: Int = -1  // Character index where AI text starts
+    @Published var aiHighlightActive = false        // Whether to show highlight
+    private var lastSavedContent: String = ""  // Track what was last saved
     private var saveTask: Task<Void, Never>?
-    
+    private var highlightTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
+
     private let supabase = SupabaseService.shared
     private let api = APIService.shared
-    
+
     init(sessionId: UUID) {
         self.sessionId = sessionId
         setupNotifications()
+
+        // Auto-save pipeline - save when content changes
+        $noteContent
+            .dropFirst()
+            .debounce(for: 0.8, scheduler: RunLoop.main)
+            .sink { [weak self] newContent in
+                guard let self = self else { return }
+                // Only save if content actually changed from last saved
+                guard newContent != self.lastSavedContent else { return }
+                Task {
+                    await self.saveNote()
+                }
+            }
+            .store(in: &cancellables)
     }
     
     private func setupNotifications() {
@@ -138,12 +150,11 @@ class SessionViewModel: ObservableObject {
             let dbMessages = try await chatTask
             chatMessages = dbMessages.map { $0.toChatMessage() }
             
-            // Load note (skip auto-save trigger)
+            // Load note
             let loadedNote = try await noteTask
             note = loadedNote
-            isLoadingNote = true
+            lastSavedContent = loadedNote.content  // Track what's saved
             noteContent = loadedNote.content
-            isLoadingNote = false
         } catch {
             self.error = error.localizedDescription
         }
@@ -233,130 +244,94 @@ class SessionViewModel: ObservableObject {
     }
     
     /// Send a chat message with selected entities context
+    /// Send a chat message with full context to the Chat API
     func sendChatMessage() async {
         let userMessage = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !userMessage.isEmpty else { return }
         
-        // Add user message to chat and save to database
+        // Save note length BEFORE API call for accurate highlight positioning
+        // Use UTF-16 length for NSTextStorage compatibility
+        let noteContentLengthBeforeAPI = (noteContent as NSString).length
+        
+        // UI Updates
         let userChatMsg = ChatMessage(isUser: true, text: userMessage)
         chatMessages.append(userChatMsg)
         chatInput = ""
         isChatLoading = true
         
-        // Save user message to database
+        defer { isChatLoading = false }
+        
+        // Save user message
         Task {
             try? await supabase.saveChatMessage(sessionId: sessionId, role: "user", content: userMessage)
         }
         
-        defer { isChatLoading = false }
-        
-        // Check if this is a summarize command
-        if isSummarizeCommand(userMessage) {
-            await createSummaryFromChat(userQuery: userMessage)
-            return
+        // Prepare Context
+        let chatScreenshots = screenshots.compactMap { screen -> APIService.ChatScreenshot? in
+            let entity = entities.first { $0.screenshotIds.contains(screen.id) }
+            // Get summary from entity attributes if available
+            var summary = ""
+            if let entity = entity, let sum = entity.data["summary"]?.value as? String {
+                summary = sum
+            } else if let entity = entity, let sum = entity.data["condensed_summary"]?.value as? String {
+                summary = sum
+            }
+            
+            return APIService.ChatScreenshot(
+                id: screen.id.uuidString,
+                rawText: screen.rawText ?? "",
+                summary: summary
+            )
         }
         
+        let context = APIService.ChatContext(
+            screenshots: chatScreenshots,
+            sessionName: sessionSummary, 
+            sessionCategory: sessionCategory
+        )
+        
         do {
-            // Build context from selected entities (or all if none selected)
-            let contextEntities = selectedEntityIds.isEmpty ? entities : selectedEntities
-            
-            // Build screens array from context entities
-            var screens: [(id: String, analysis: APIService.AnalyzeResponse)] = []
-            
-            for entity in contextEntities {
-                var attributes: [String: String] = [:]
-                for (key, value) in entity.data {
-                    if let strValue = value.value as? String {
-                        attributes[key] = strValue
-                    }
-                }
-                
-                let apiEntity = APIService.Entity(
-                    type: entity.entityType ?? "generic",
-                    title: attributes["title"] ?? attributes["suggested_title"],
-                    attributes: attributes
-                )
-                
-                let analysis = APIService.AnalyzeResponse(
-                    rawText: screenshots.first { entity.screenshotIds.contains($0.id) }?.rawText ?? attributes["summary"] ?? "",
-                    summary: attributes["summary"] ?? attributes["condensed_summary"] ?? "",
-                    userIntent: attributes["user_intent"],
-                    category: sessionCategory ?? "other",
-                    entities: [apiEntity],
-                    suggestedNotebookTitle: attributes["suggested_title"],
-                    contextClues: nil
-                )
-                
-                // Use screenshotId if available, otherwise use entity id as virtual screen
-                let screenId = entity.screenshotIds.first?.uuidString ?? entity.id.uuidString
-                screens.append((id: screenId, analysis: analysis))
-            }
-            
-            // If no screens, give a helpful response without calling API
-            guard !screens.isEmpty else {
-                let noContextMsg = "I don't have any context to work with yet. Try capturing some screenshots first!"
-                chatMessages.append(ChatMessage(isUser: false, text: noContextMsg))
-                Task { try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: noContextMsg) }
-                return
-            }
-            
-            // Build previous session context with user query
-            let selectedContext = selectedEntityIds.isEmpty 
-                ? "" 
-                : "\n\n[User has selected \(selectedEntityIds.count) items to discuss]"
-            
-            let previousSession = APIService.PreviousSession(
-                sessionSummary: (sessionSummary ?? "Session with captured screenshots") + selectedContext + "\n\nUser asked: " + userMessage,
-                sessionCategory: sessionCategory ?? "other",
-                entities: contextEntities.map { entity in
-                    var attrs: [String: String] = [:]
-                    for (key, value) in entity.data {
-                        if let str = value.value as? String {
-                            attrs[key] = str
-                        }
-                    }
-                    return APIService.Entity(
-                        type: entity.entityType ?? "generic",
-                        title: attrs["title"],
-                        attributes: attrs
-                    )
-                }
-            )
-            
-            // Call regenerate API
-            let response = try await api.regenerateSession(
+            let response = try await api.chat(
                 sessionId: sessionId,
-                previousSession: previousSession,
-                screens: screens
+                userMessage: userMessage,
+                currentNote: noteContent,
+                context: context
             )
             
-            // Update session state
-            sessionSummary = response.sessionSummary
-            sessionCategory = response.sessionCategory
+            // Handle Response
+            let aiMsg = ChatMessage(isUser: false, text: response.reply)
+            chatMessages.append(aiMsg)
             
-            // Add AI response to chat and note
-            let aiResponse = response.sessionSummary.isEmpty 
-                ? "I've analyzed your captures. How can I help you with them?"
-                : response.sessionSummary
-            chatMessages.append(ChatMessage(isUser: false, text: aiResponse))
-            
-            // Append to note with user question and AI response
-            let chatNoteEntry = "---\n\n**You asked:** \(userMessage)\n\n**AI:** \(aiResponse)"
-            appendToNote(chatNoteEntry)
-            
-            // Save AI response to database
+            // Save AI message
             Task {
-                try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: aiResponse)
+                try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: response.reply)
+            }
+            
+            // Update Note
+            if response.noteWasModified, let updatedContent = response.updatedNote {
+                // AI modified the note directly
+                await MainActor.run {
+                    let updatedLength = (updatedContent as NSString).length
+                    self.noteContent = updatedContent
+                    
+                    // Only highlight if new content was actually added
+                    if updatedLength > noteContentLengthBeforeAPI {
+                        // Highlight starts where original content ended
+                        self.triggerAIHighlight(startIndex: noteContentLengthBeforeAPI)
+                    }
+                }
+            } else {
+                // AI answered a question - append to note log
+                let chatLog = "---\n\n**You:** \(userMessage)\n\n**AI:** \(response.reply)"
+                await MainActor.run {
+                    self.appendToNote(chatLog)
+                }
             }
             
         } catch {
-            let errorMsg = "Sorry, I encountered an error: \(error.localizedDescription)"
+            let errorMsg = "Error: \(error.localizedDescription)"
             chatMessages.append(ChatMessage(isUser: false, text: errorMsg))
-            
-            // Save error response to database
-            Task {
-                try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: errorMsg)
-            }
+            Task { try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: errorMsg) }
         }
     }
     
@@ -509,25 +484,54 @@ class SessionViewModel: ObservableObject {
     /// Save note content to database
     func saveNote() async {
         guard let noteId = note?.id else { return }
-        guard noteContent != note?.content else { return } // No change
-        
+        let contentToSave = noteContent
+        guard contentToSave != lastSavedContent else { return } // No change
+
         isNoteSaving = true
-        defer { isNoteSaving = false }
-        
+
         do {
-            let updated = try await supabase.updateNote(id: noteId, content: noteContent)
+            let updated = try await supabase.updateNote(id: noteId, content: contentToSave)
             note = updated
+            lastSavedContent = contentToSave  // Track successful save
+            isNoteSaving = false
         } catch {
-            self.error = error.localizedDescription
+            isNoteSaving = false
+            self.error = "Failed to save note: \(error.localizedDescription)"
         }
     }
     
     /// Append text to the note (used by AI)
     func appendToNote(_ text: String) {
+        // Track where new text will start using UTF-16 length for NSTextStorage compatibility
+        let startIndex: Int
         if noteContent.isEmpty {
+            startIndex = 0
             noteContent = text
         } else {
+            // Use UTF-16 count for accurate NSTextStorage positioning
+            startIndex = (noteContent as NSString).length + 2  // +2 for "\n\n"
             noteContent += "\n\n" + text
+        }
+        triggerAIHighlight(startIndex: startIndex)
+    }
+    
+    /// Trigger highlight effect for AI-inserted text at given start index
+    func triggerAIHighlight(startIndex: Int) {
+        highlightTask?.cancel()
+        
+        // Only highlight if there's something to highlight
+        guard startIndex >= 0 else { return }
+        
+        aiHighlightStartIndex = startIndex
+        aiHighlightActive = true
+        
+        highlightTask = Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self.aiHighlightActive = false
+                self.aiHighlightStartIndex = -1
+            }
         }
     }
     
@@ -545,6 +549,6 @@ class SessionViewModel: ObservableObject {
             insertText += "\n\n> **Intent:** \(intent)"
         }
         
-        appendToNote(insertText)
+        appendToNote(insertText)  // This already triggers AI highlight
     }
 }
