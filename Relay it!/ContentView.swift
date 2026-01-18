@@ -2,20 +2,14 @@
 //  ContentView.swift
 //  Relay it!
 //
-//  Created by Gary yang on 2026/1/17.
+//  Root content view - redirects to MainContentView
 //
 
 import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
+        MainContentView()
     }
 }
 

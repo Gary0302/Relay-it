@@ -2,16 +2,32 @@
 //  Relay_it_App.swift
 //  Relay it!
 //
-//  Created by Gary yang on 2026/1/17.
+//  App entry point
 //
 
 import SwiftUI
 
 @main
 struct Relay_it_App: App {
+    @StateObject private var appState = AppState.shared
+    @StateObject private var auth = AuthService.shared
+    
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MainContentView()
+                .environmentObject(appState)
+                .environmentObject(auth)
+        }
+        .commands {
+            // Add capture command to menu
+            CommandMenu("Capture") {
+                Button("Take Screenshot") {
+                    Task {
+                        await appState.captureScreenshot()
+                    }
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+            }
         }
     }
 }
