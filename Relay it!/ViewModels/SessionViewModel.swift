@@ -94,12 +94,14 @@ class SessionViewModel: ObservableObject {
     @Published var noteContent: String = ""
     @Published var isNoteSaving = false
     @Published var aiHighlightStartIndex: Int = -1  // Character index where AI text starts
+    @Published var aiHighlightLength: Int = 0
     @Published var aiHighlightActive = false        // Whether to show highlight
     @Published var aiSuggestionHint: String?
     @Published var cursorInsertionIndex: Int = 0
     @Published var cursorAnchor: CGPoint = .zero
 
     private var lastSavedContent: String = ""  // Track what was last saved
+    private var aiUndoStack: [AIEditSnapshot] = []
     private var saveTask: Task<Void, Never>?
     private var highlightTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
@@ -108,6 +110,11 @@ class SessionViewModel: ObservableObject {
 
     private let supabase = SupabaseService.shared
     private let api = APIService.shared
+
+    private struct AIEditSnapshot {
+        let previousContent: String
+        let previousCursorIndex: Int
+    }
 
     init(sessionId: UUID) {
         self.sessionId = sessionId
@@ -284,7 +291,6 @@ class SessionViewModel: ObservableObject {
         let userMessage = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !userMessage.isEmpty else { return }
         
-        let noteContentLengthBeforeAPI = (noteContent as NSString).length
         
         // UI Updates
         let userChatMsg = ChatMessage(isUser: true, text: userMessage)
@@ -390,8 +396,13 @@ class SessionViewModel: ObservableObject {
                 case "replace":
                     if let content = operation.content {
                         await MainActor.run {
+                            let previous = self.noteContent
+                            self.recordAIEditSnapshot()
                             self.noteContent = content
-                            self.triggerAIHighlight(startIndex: 0)
+                            self.cursorInsertionIndex = (content as NSString).length
+                            if let range = self.changedRange(from: previous, to: content) {
+                                self.triggerAIHighlight(startIndex: range.location, length: range.length)
+                            }
                         }
                     }
                 default:
@@ -401,10 +412,12 @@ class SessionViewModel: ObservableObject {
             // v1 backward compatibility fallback
             else if response.noteWasModified == true, let updatedContent = response.updatedNote {
                 await MainActor.run {
-                    let updatedLength = (updatedContent as NSString).length
+                    let previous = self.noteContent
+                    self.recordAIEditSnapshot()
                     self.noteContent = updatedContent
-                    if updatedLength > noteContentLengthBeforeAPI {
-                        self.triggerAIHighlight(startIndex: noteContentLengthBeforeAPI)
+                    self.cursorInsertionIndex = (updatedContent as NSString).length
+                    if let range = self.changedRange(from: previous, to: updatedContent) {
+                        self.triggerAIHighlight(startIndex: range.location, length: range.length)
                     }
                 }
             }
@@ -412,7 +425,7 @@ class SessionViewModel: ObservableObject {
         } catch {
             let errorMsg = "Error: \(error.localizedDescription)"
             chatMessages.append(ChatMessage(isUser: false, text: errorMsg))
-            Task { try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: errorMsg) }
+            Task { _ = try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: errorMsg) }
         }
     }
     
@@ -583,7 +596,13 @@ class SessionViewModel: ObservableObject {
     
     /// Append text to the note (used by AI)
     func appendToNote(_ text: String) {
+        guard !text.isEmpty else { return }
+
+        recordAIEditSnapshot()
+
+        let textLength = (text as NSString).length
         let startIndex: Int
+
         if noteContent.isEmpty {
             startIndex = 0
             noteContent = text
@@ -591,11 +610,17 @@ class SessionViewModel: ObservableObject {
             startIndex = (noteContent as NSString).length + 2
             noteContent += "\n\n" + text
         }
-        triggerAIHighlight(startIndex: startIndex)
+
+        cursorInsertionIndex = min((noteContent as NSString).length, startIndex + textLength)
+        triggerAIHighlight(startIndex: startIndex, length: textLength)
     }
 
     /// Insert text at cursor position (used by AI callout)
     func insertAtCursor(_ text: String) {
+        guard !text.isEmpty else { return }
+
+        recordAIEditSnapshot()
+
         let nsText = noteContent as NSString
         let safeIndex = min(max(0, cursorInsertionIndex), nsText.length)
 
@@ -614,9 +639,11 @@ class SessionViewModel: ObservableObject {
         }
 
         noteContent = prefix + insertion + suffix
-        let insertedLength = (insertion as NSString).length
-        cursorInsertionIndex = safeIndex + insertedLength
-        triggerAIHighlight(startIndex: safeIndex + (needsLeadingBreak ? 1 : 0))
+        let visibleStart = safeIndex + (needsLeadingBreak ? 1 : 0)
+        let visibleLength = (text as NSString).length
+
+        cursorInsertionIndex = min((noteContent as NSString).length, safeIndex + (insertion as NSString).length)
+        triggerAIHighlight(startIndex: visibleStart, length: visibleLength)
     }
 
     func updateCursorPosition(index: Int, anchor: CGPoint?) {
@@ -629,23 +656,36 @@ class SessionViewModel: ObservableObject {
     func dismissAISuggestionHint() {
         aiSuggestionHint = nil
     }
+
+    @discardableResult
+    func undoLastAIEdit() -> Bool {
+        guard let snapshot = aiUndoStack.popLast() else { return false }
+        noteContent = snapshot.previousContent
+        cursorInsertionIndex = min(snapshot.previousCursorIndex, (snapshot.previousContent as NSString).length)
+        aiHighlightActive = false
+        aiHighlightStartIndex = -1
+        aiHighlightLength = 0
+        return true
+    }
+
     
-    /// Trigger highlight effect for AI-inserted text at given start index
-    func triggerAIHighlight(startIndex: Int) {
+    /// Trigger highlight effect for AI-inserted text at given range
+    func triggerAIHighlight(startIndex: Int, length: Int) {
         highlightTask?.cancel()
-        
-        // Only highlight if there's something to highlight
-        guard startIndex >= 0 else { return }
-        
+
+        guard startIndex >= 0, length > 0 else { return }
+
         aiHighlightStartIndex = startIndex
+        aiHighlightLength = length
         aiHighlightActive = true
-        
+
         highlightTask = Task {
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.aiHighlightActive = false
                 self.aiHighlightStartIndex = -1
+                self.aiHighlightLength = 0
             }
         }
     }
@@ -687,9 +727,14 @@ class SessionViewModel: ObservableObject {
             switch operation.type {
             case "replace":
                 if let content = operation.content {
+                    let previous = noteContent
+                    recordAIEditSnapshot()
                     noteContent = content
                     cursorInsertionIndex = (content as NSString).length
-                    triggerAIHighlight(startIndex: 0)
+
+                    if let range = changedRange(from: previous, to: content) {
+                        triggerAIHighlight(startIndex: range.location, length: range.length)
+                    }
                     return
                 }
             case "append":
@@ -703,10 +748,13 @@ class SessionViewModel: ObservableObject {
         }
 
         if response.noteWasModified == true, let updatedContent = response.updatedNote {
-            let oldLength = (noteContent as NSString).length
+            let previous = noteContent
+            recordAIEditSnapshot()
             noteContent = updatedContent
-            if (updatedContent as NSString).length > oldLength {
-                triggerAIHighlight(startIndex: oldLength)
+            cursorInsertionIndex = (updatedContent as NSString).length
+
+            if let range = changedRange(from: previous, to: updatedContent) {
+                triggerAIHighlight(startIndex: range.location, length: range.length)
             }
             return
         }
@@ -790,6 +838,47 @@ class SessionViewModel: ObservableObject {
             return String(current[idx...])
         }
         return current
+    }
+
+    private func recordAIEditSnapshot() {
+        aiUndoStack.append(
+            AIEditSnapshot(
+                previousContent: noteContent,
+                previousCursorIndex: cursorInsertionIndex
+            )
+        )
+
+        // Keep bounded history to avoid unbounded memory growth.
+        if aiUndoStack.count > 30 {
+            aiUndoStack.removeFirst(aiUndoStack.count - 30)
+        }
+    }
+
+    private func changedRange(from old: String, to new: String) -> NSRange? {
+        let oldText = old as NSString
+        let newText = new as NSString
+
+        let oldLen = oldText.length
+        let newLen = newText.length
+
+        var prefix = 0
+        while prefix < oldLen && prefix < newLen,
+              oldText.character(at: prefix) == newText.character(at: prefix) {
+            prefix += 1
+        }
+
+        var oldSuffix = oldLen
+        var newSuffix = newLen
+        while oldSuffix > prefix,
+              newSuffix > prefix,
+              oldText.character(at: oldSuffix - 1) == newText.character(at: newSuffix - 1) {
+            oldSuffix -= 1
+            newSuffix -= 1
+        }
+
+        let changedLength = max(0, newSuffix - prefix)
+        guard changedLength > 0 else { return nil }
+        return NSRange(location: prefix, length: changedLength)
     }
 
     /// Insert analysis from screenshot into note

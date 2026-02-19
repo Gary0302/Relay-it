@@ -26,6 +26,7 @@ struct NoteEditorView: View {
     var isSaving: Bool = false
     var aiHighlightActive: Bool = false
     var aiHighlightStartIndex: Int = -1
+    var aiHighlightLength: Int = 0
     var showsToolbar: Bool = true
 
     var command: NoteEditorCommand?
@@ -34,6 +35,7 @@ struct NoteEditorView: View {
     var onSpaceOnEmptyLine: ((CGPoint) -> Void)? = nil
     var onCursorChange: ((Int, CGPoint?) -> Void)? = nil
     var onAnyKeyPress: (() -> Void)? = nil
+    var onUndoAIChange: (() -> Bool)? = nil
 
     @State private var localCommand: NoteEditorCommand?
     @State private var localCommandNonce: Int = 0
@@ -45,14 +47,7 @@ struct NoteEditorView: View {
                 Divider()
             }
 
-            if showPreview {
-                HSplitView {
-                    editorPane
-                    previewPane
-                }
-            } else {
-                editorPane
-            }
+            editorPane
         }
         .background(Color.themeBackground)
     }
@@ -76,15 +71,6 @@ struct NoteEditorView: View {
                 FormatButton(icon: "list.bullet", action: { triggerLocalCommand(.bullet) })
                 FormatButton(icon: "list.number", action: { triggerLocalCommand(.numbered) })
 
-                Divider()
-                    .frame(height: 16)
-
-                Button(action: { showPreview.toggle() }) {
-                    Image(systemName: showPreview ? "eye.fill" : "eye")
-                        .foregroundStyle(showPreview ? Color.themeAccent : Color.themeTextSecondary)
-                }
-                .buttonStyle(.plain)
-                .help(showPreview ? "Hide Preview" : "Show Preview")
             }
         }
         .padding(.horizontal, 16)
@@ -96,12 +82,14 @@ struct NoteEditorView: View {
         HighlightableTextEditor(
             text: $content,
             highlightStartIndex: aiHighlightStartIndex,
+            highlightLength: aiHighlightLength,
             isHighlightActive: aiHighlightActive,
             command: command ?? localCommand,
             commandNonce: command == nil ? localCommandNonce : commandNonce,
             onSpaceOnEmptyLine: onSpaceOnEmptyLine,
             onCursorChange: onCursorChange,
-            onAnyKeyPress: onAnyKeyPress
+            onAnyKeyPress: onAnyKeyPress,
+            onUndoAIChange: onUndoAIChange
         )
         .padding(16)
         .background(Color.themeBackground)
@@ -128,6 +116,7 @@ struct NoteEditorView: View {
 struct HighlightableTextEditor: NSViewRepresentable {
     @Binding var text: String
     var highlightStartIndex: Int
+    var highlightLength: Int
     var isHighlightActive: Bool
 
     var command: NoteEditorCommand?
@@ -136,6 +125,7 @@ struct HighlightableTextEditor: NSViewRepresentable {
     var onSpaceOnEmptyLine: ((CGPoint) -> Void)?
     var onCursorChange: ((Int, CGPoint?) -> Void)?
     var onAnyKeyPress: (() -> Void)?
+    var onUndoAIChange: (() -> Bool)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -178,7 +168,7 @@ struct HighlightableTextEditor: NSViewRepresentable {
         textView.isSelectable = true
         textView.allowsUndo = true
         textView.isRichText = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        textView.font = .themeMono(size: 16)
         textView.textColor = NSColor(Color.themeText)
         textView.backgroundColor = NSColor.clear
         textView.drawsBackground = false
@@ -186,6 +176,7 @@ struct HighlightableTextEditor: NSViewRepresentable {
 
         textView.onSpaceOnEmptyLine = onSpaceOnEmptyLine
         textView.onAnyKeyPress = onAnyKeyPress
+        textView.onUndoAIChange = onUndoAIChange
 
         scrollView.documentView = textView
         context.coordinator.textView = textView
@@ -198,6 +189,7 @@ struct HighlightableTextEditor: NSViewRepresentable {
 
         textView.onSpaceOnEmptyLine = onSpaceOnEmptyLine
         textView.onAnyKeyPress = onAnyKeyPress
+        textView.onUndoAIChange = onUndoAIChange
 
         let contentSize = scrollView.contentSize
         textView.textContainer?.containerSize = NSSize(
@@ -210,6 +202,7 @@ struct HighlightableTextEditor: NSViewRepresentable {
             let selectedRanges = textView.selectedRanges
             textView.string = text
             textView.selectedRanges = selectedRanges
+            textView.applyMarkdownStyling()
         }
 
         if context.coordinator.lastCommandNonce != commandNonce {
@@ -219,6 +212,7 @@ struct HighlightableTextEditor: NSViewRepresentable {
 
         textView.updateHighlight(
             startIndex: highlightStartIndex,
+            length: highlightLength,
             isActive: isHighlightActive
         )
     }
@@ -235,6 +229,9 @@ struct HighlightableTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
+            if let highlightingTextView = textView as? HighlightingTextView {
+                highlightingTextView.applyMarkdownStyling()
+            }
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -309,6 +306,7 @@ class HighlightingTextView: NSTextView {
 
     var onSpaceOnEmptyLine: ((CGPoint) -> Void)?
     var onAnyKeyPress: (() -> Void)?
+    var onUndoAIChange: (() -> Bool)?
 
     override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
         super.init(frame: frameRect, textContainer: container)
@@ -322,6 +320,14 @@ class HighlightingTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         onAnyKeyPress?()
+
+        let isCommandZ = event.modifierFlags.contains(.command)
+            && event.charactersIgnoringModifiers?.lowercased() == "z"
+
+        if isCommandZ, onUndoAIChange?() == true {
+            return
+        }
+
         super.keyDown(with: event)
     }
 
@@ -388,8 +394,83 @@ class HighlightingTextView: NSTextView {
         return line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    func updateHighlight(startIndex: Int, isActive: Bool) {
-        if !isActive || startIndex < 0 {
+    func applyMarkdownStyling() {
+        guard let textStorage = textStorage else { return }
+
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        let selected = selectedRanges
+
+        let baseFont = NSFont.themeMono(size: 16)
+        let boldFont = NSFont.themeMono(size: 16, weight: .semibold)
+        let heading1 = NSFont.themeMono(size: 22, weight: .semibold)
+        let heading2 = NSFont.themeMono(size: 20, weight: .semibold)
+        let heading3 = NSFont.themeMono(size: 18, weight: .semibold)
+
+        textStorage.beginEditing()
+
+        textStorage.addAttributes([
+            .font: baseFont,
+            .foregroundColor: NSColor(Color.themeText)
+        ], range: fullRange)
+
+        let text = textStorage.string as NSString
+
+        applyRegex(#"(?m)^(#{1,3})\s+(.+)$"#, in: text) { match in
+            let marksRange = match.range(at: 1)
+            let contentRange = match.range(at: 2)
+
+            let level = text.substring(with: marksRange).count
+            let headingFont: NSFont
+            switch level {
+            case 1: headingFont = heading1
+            case 2: headingFont = heading2
+            default: headingFont = heading3
+            }
+
+            textStorage.addAttribute(.foregroundColor, value: NSColor.clear, range: marksRange)
+            textStorage.addAttributes([
+                .font: headingFont,
+                .foregroundColor: NSColor(Color.themeText)
+            ], range: contentRange)
+        }
+
+        applyRegex(#"\*\*(.+?)\*\*"#, in: text) { match in
+            let contentRange = match.range(at: 1)
+            textStorage.addAttribute(.font, value: boldFont, range: contentRange)
+        }
+
+        applyRegex(#"`([^`]+)`"#, in: text) { match in
+            let contentRange = match.range(at: 1)
+            textStorage.addAttributes([
+                .foregroundColor: NSColor(Color.themeAccent),
+                .backgroundColor: NSColor(Color.themeCard)
+            ], range: contentRange)
+        }
+
+        applyRegex(#"(?m)^>\s+.*$"#, in: text) { match in
+            textStorage.addAttribute(.foregroundColor, value: NSColor(Color.themeTextSecondary), range: match.range)
+        }
+
+        applyRegex(#"(?m)^(\s*(?:[-*]|\d+\.))\s+"#, in: text) { match in
+            let markerRange = match.range(at: 1)
+            textStorage.addAttribute(.foregroundColor, value: NSColor(Color.themeAccent), range: markerRange)
+        }
+
+        textStorage.endEditing()
+        selectedRanges = selected
+    }
+
+    private func applyRegex(_ pattern: String, in text: NSString, using block: (NSTextCheckingResult) -> Void) {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return }
+        let all = NSRange(location: 0, length: text.length)
+        regex.enumerateMatches(in: text as String, options: [], range: all) { match, _, _ in
+            guard let match else { return }
+            block(match)
+        }
+    }
+
+    func updateHighlight(startIndex: Int, length: Int, isActive: Bool) {
+        if !isActive || startIndex < 0 || length <= 0 {
             clearHighlight()
             return
         }
@@ -402,8 +483,13 @@ class HighlightingTextView: NSTextView {
             return
         }
 
-        let highlightLength = totalLength - startIndex
-        let nsRange = NSRange(location: startIndex, length: highlightLength)
+        let clampedLength = min(length, totalLength - startIndex)
+        guard clampedLength > 0 else {
+            clearHighlight()
+            return
+        }
+
+        let nsRange = NSRange(location: startIndex, length: clampedLength)
 
         if currentHighlightRange != nsRange {
             applyHighlight(at: nsRange)

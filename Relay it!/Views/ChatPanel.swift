@@ -12,9 +12,6 @@ struct ChatPanel: View {
     @ObservedObject var viewModel: SessionViewModel
     @Binding var selectedScreenshotId: UUID?
 
-    @State private var showPreview = false
-    @State private var activeCommand: NoteEditorCommand?
-    @State private var commandNonce = 0
 
     @State private var showAICallout = false
     @State private var aiCalloutAnchor = CGPoint(x: 180, y: 160)
@@ -36,10 +33,6 @@ struct ChatPanel: View {
                 }
             }
 
-            Divider()
-                .background(Color.themeDivider)
-
-            bottomToolbar
         }
         .background(Color.themeBackground)
         .onDisappear {
@@ -59,13 +52,12 @@ struct ChatPanel: View {
             } else {
                 NoteEditorView(
                     content: $viewModel.noteContent,
-                    showPreview: $showPreview,
+                    showPreview: .constant(false),
                     isSaving: viewModel.isNoteSaving,
                     aiHighlightActive: viewModel.aiHighlightActive,
                     aiHighlightStartIndex: viewModel.aiHighlightStartIndex,
+                    aiHighlightLength: viewModel.aiHighlightLength,
                     showsToolbar: false,
-                    command: activeCommand,
-                    commandNonce: commandNonce,
                     onSpaceOnEmptyLine: { point in
                         aiCalloutAnchor = point
                         aiPromptText = ""
@@ -77,72 +69,13 @@ struct ChatPanel: View {
                     },
                     onAnyKeyPress: {
                         viewModel.dismissAISuggestionHint()
+                    },
+                    onUndoAIChange: {
+                        viewModel.undoLastAIEdit()
                     }
                 )
             }
         }
-    }
-
-    private var bottomToolbar: some View {
-        HStack(spacing: 12) {
-            toolbarButton("bold", command: .bold)
-            toolbarButton("italic", command: .italic)
-            toolbarButton("textformat.size.larger", command: .h1)
-            toolbarButton("textformat.size", command: .h2)
-            toolbarButton("list.bullet", command: .bullet)
-            toolbarButton("list.number", command: .numbered)
-            toolbarButton("text.quote", command: .quote)
-            toolbarButton("minus", command: .divider)
-
-            Divider()
-                .frame(height: 16)
-
-            Button(action: { showPreview.toggle() }) {
-                HStack(spacing: 4) {
-                    Image(systemName: showPreview ? "eye.fill" : "eye")
-                    Text("Preview")
-                        .font(.caption)
-                }
-                .foregroundStyle(showPreview ? Color.themeAccent : Color.themeTextSecondary)
-            }
-            .buttonStyle(.plain)
-            .help(showPreview ? "Hide preview" : "Show preview")
-
-            Spacer()
-
-            HStack(spacing: 6) {
-                if isAICallRunning {
-                    ProgressView()
-                        .scaleEffect(0.6)
-                }
-
-                if viewModel.isNoteSaving {
-                    Text("Saving...")
-                        .font(.caption)
-                        .foregroundStyle(Color.themeTextSecondary)
-                } else if isAICallRunning {
-                    Text("AI writing...")
-                        .font(.caption)
-                        .foregroundStyle(Color.themeTextSecondary)
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.themeSurface)
-    }
-
-    private func toolbarButton(_ icon: String, command: NoteEditorCommand) -> some View {
-        Button(action: { runCommand(command) }) {
-            Image(systemName: icon)
-                .foregroundStyle(Color.themeTextSecondary)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func runCommand(_ command: NoteEditorCommand) {
-        activeCommand = command
-        commandNonce += 1
     }
 
     private var calloutOverlay: some View {

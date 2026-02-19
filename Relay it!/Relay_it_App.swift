@@ -15,6 +15,7 @@ struct Relay_it_App: App {
     var body: some Scene {
         WindowGroup {
             MainContentView()
+                .font(.themeMono(size: 16))
                 .environmentObject(appState)
                 .environmentObject(auth)
         }

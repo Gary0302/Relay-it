@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 extension Color {
     // MARK: - Primary Theme Colors (Sage/Olive palette)
@@ -92,5 +93,44 @@ extension Color {
             blue:  Double(b) / 255,
             opacity: Double(a) / 255
         )
+    }
+}
+
+
+// MARK: - Shared Mono Font Stack
+
+extension Font {
+    private static let monoFontStack = [
+        "Fira Code",
+        "Fira Mono",
+        "Menlo",
+        "Consolas",
+        "DejaVu Sans Mono"
+    ]
+
+    static func themeMono(size: CGFloat) -> Font {
+        for name in monoFontStack where NSFont(name: name, size: size) != nil {
+            return .custom(name, size: size)
+        }
+        return .system(size: size, weight: .regular, design: .monospaced)
+    }
+}
+
+extension NSFont {
+    private static let monoFontStack = [
+        "Fira Code",
+        "Fira Mono",
+        "Menlo",
+        "Consolas",
+        "DejaVu Sans Mono"
+    ]
+
+    static func themeMono(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        for name in monoFontStack {
+            if let font = NSFont(name: name, size: size) {
+                return NSFontManager.shared.convert(font, toHaveTrait: [])
+            }
+        }
+        return NSFont.monospacedSystemFont(ofSize: size, weight: weight)
     }
 }
