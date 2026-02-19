@@ -2,7 +2,7 @@
 //  ChatInputView.swift
 //  Relay it!
 //
-//  Chat input for asking questions about the session
+//  ChatGPT-style input bar with attachment support
 //
 
 import SwiftUI
@@ -19,100 +19,98 @@ struct ChatInputView: View {
         if selectedCount > 0 {
             return "Ask about \(selectedCount) selected item\(selectedCount > 1 ? "s" : "")..."
         }
-        return "Ask about your captures..."
+        return "Message Relay it!..."
     }
 
     var body: some View {
-        VStack(spacing: 4) {
-            // Selection hint - fixed height to prevent layout shift
-            HStack {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Color.themeAccent)
-                Text("\(selectedCount) selected — questions will focus on these items")
-                    .font(.caption)
-                    .foregroundStyle(Color.themeTextSecondary)
-                Spacer()
+        VStack(spacing: 0) {
+            // Selection hint
+            if selectedCount > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color.themeAccent)
+                    Text("\(selectedCount) item\(selectedCount > 1 ? "s" : "") selected")
+                        .font(.caption)
+                        .foregroundStyle(Color.themeTextSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 6)
+                .padding(.bottom, 2)
             }
-            .padding(.horizontal)
-            .padding(.top, 4)
-            .opacity(selectedCount > 0 ? 1 : 0)
-            .frame(height: selectedCount > 0 ? nil : 0)
-
-            HStack(spacing: 12) {
-                TextField(placeholder, text: $message)
-                    .textFieldStyle(.plain)
-                    .foregroundStyle(Color.themeText)
-                    .padding(10)
-                    .background(Color.themeInput)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .focused($isInputFocused)
-                    .onSubmit {
-                        if !message.isEmpty && !isLoading {
-                            onSend()
-                            // Maintain focus after sending
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                isInputFocused = true
+            
+            // Input row
+            HStack(alignment: .bottom, spacing: 10) {
+                // Text input with rounded border
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField(placeholder, text: $message, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.body)
+                        .foregroundStyle(Color.themeText)
+                        .lineLimit(1...6)
+                        .focused($isInputFocused)
+                        .onSubmit {
+                            if !message.isEmpty && !isLoading {
+                                onSend()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                    isInputFocused = true
+                                }
                             }
                         }
-                    }
-
-                Button(action: {
-                    onSend()
-                    // Maintain focus after sending
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        isInputFocused = true
-                    }
-                }) {
-                    ZStack {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(message.isEmpty ? Color.themeTextTertiary : Color.themeAccent)
-                            .opacity(isLoading ? 0 : 1)
-
-                        if isLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(Color.themeAccent)
+                    
+                    // Send button inside the input field
+                    Button(action: {
+                        onSend()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            isInputFocused = true
                         }
+                    }) {
+                        ZStack {
+                            if isLoading {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(Color.themeAccent)
+                            } else {
+                                Image(systemName: "arrow.up.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(
+                                        message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                            ? Color.themeTextTertiary
+                                            : Color.themeAccent
+                                    )
+                            }
+                        }
+                        .frame(width: 28, height: 28)
                     }
-                    .frame(width: 28, height: 28)
+                    .buttonStyle(.plain)
+                    .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
                 }
-                .buttonStyle(.plain)
-                .disabled(message.isEmpty || isLoading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color.themeInput)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(isInputFocused ? Color.themeAccent.opacity(0.4) : Color.themeBorder.opacity(0.5), lineWidth: 1)
+                )
             }
-            .padding(.horizontal)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
-        .background(Color.themeSurface)
-    }
-}
-
-struct ChatMessageView: View {
-    let isUser: Bool
-    let message: String
-
-    var body: some View {
-        HStack {
-            if isUser { Spacer() }
-
-            Text(message)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(isUser ? Color.themeAccent : Color.themeSurface)
-                .foregroundStyle(isUser ? .white : Color.themeText)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-
-            if !isUser { Spacer() }
-        }
+        .background(Color.themeBackground)
     }
 }
 
 #Preview {
     VStack {
-        ChatMessageView(isUser: true, message: "Which hotel has the best value?")
-        ChatMessageView(isUser: false, message: "Based on your captures, the Marriott offers the best value with $199/night and 4.5 star rating.")
-        ChatInputView(message: .constant(""), isLoading: false, selectedCount: 2, onSend: {})
+        Spacer()
+        ChatInputView(message: .constant(""), isLoading: false, selectedCount: 0, onSend: {})
+        ChatInputView(message: .constant("Hello there"), isLoading: false, selectedCount: 2, onSend: {})
+        ChatInputView(message: .constant(""), isLoading: true, selectedCount: 0, onSend: {})
     }
-    .padding()
-    .frame(width: 400)
+    .frame(width: 500, height: 400)
+    .background(Color.themeBackground)
 }

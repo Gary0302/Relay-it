@@ -2,129 +2,10 @@
 //  SummaryPanel.swift
 //  Relay it!
 //
-//  Created by Relay it! on 2026/1/17.
+//  Shared UI components: EntityCard, DataFieldRow, EmptyStateView
 //
 
 import SwiftUI
-
-/// Left panel showing AI-generated summary with editable content
-/// Left panel showing AI-generated summary with editable content
-struct SummaryPanel: View {
-    @ObservedObject var appState: AppState
-    @ObservedObject var viewModel: SessionViewModel
-    @Binding var selectedScreenshotId: UUID?
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Notes")
-                    .font(.headline)
-                    .foregroundStyle(Color.themeText)
-
-                Spacer()
-
-                if viewModel.isRegenerating || viewModel.isChatLoading {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                        .tint(Color.themeAccent)
-                }
-            }
-            .padding()
-            .background(Color.themeSurface)
-            
-            Divider()
-            
-            // Main content: Note Editor
-            if viewModel.isLoading {
-                Spacer()
-                ProgressView("Loading...")
-                    .tint(Color.themeAccent)
-                Spacer()
-            } else {
-                NoteEditorView(
-                    content: $viewModel.noteContent,
-                    isSaving: viewModel.isNoteSaving,
-                    aiHighlightActive: viewModel.aiHighlightActive,
-                    aiHighlightStartIndex: viewModel.aiHighlightStartIndex
-                )
-                .onDisappear {
-                    Task {
-                        await viewModel.saveNote()
-                    }
-                }
-            }
-            
-            // Chat messages display - always show area to prevent layout shift
-            if !viewModel.chatMessages.isEmpty {
-                Divider()
-                    .background(Color.themeDivider)
-
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 8) {
-                            ForEach(viewModel.chatMessages) { message in
-                                ChatMessageView(isUser: message.isUser, message: message.text)
-                                    .id(message.id)
-                            }
-                        }
-                        .padding(.horizontal)
-                        .padding(.vertical, 8)
-                    }
-                    .frame(maxHeight: 200)
-                    .background(Color.themeBackground)
-                    .onAppear {
-                        // Scroll to last message on appear
-                        if let lastMessage = viewModel.chatMessages.last {
-                            proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                        }
-                    }
-                    .onChange(of: viewModel.chatMessages.count) { _, _ in
-                        // Scroll to new message with slight delay for smooth animation
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            if let lastMessage = viewModel.chatMessages.last {
-                                withAnimation(.easeOut(duration: 0.2)) {
-                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            Divider()
-                .background(Color.themeDivider)
-
-            // Chat input
-            ChatInputView(
-                message: $viewModel.chatInput,
-                isLoading: viewModel.isChatLoading,
-                selectedCount: viewModel.selectedEntityIds.count,
-                onSend: {
-                    Task {
-                        await viewModel.sendChatMessage()
-                    }
-                }
-            )
-        }
-        .background(Color.themeBackground)
-    }
-    
-    // Generate a follow-up question based on the field
-    private func generateFollowUpQuestion(key: String, value: String) -> String {
-        let formattedKey = key.replacingOccurrences(of: "_", with: " ").capitalized
-        
-        if key.hasPrefix("recommendation") {
-            return "Tell me more about: \(value)"
-        } else if key.hasPrefix("highlight") {
-            return "Can you explain this highlight: \(value)"
-        } else if key == "suggested_title" {
-            return "Why did you suggest the title '\(value)'?"
-        } else {
-            return "Tell me more about \(formattedKey): \(value)"
-        }
-    }
-}
 
 struct EmptyStateView: View {
     var body: some View {
@@ -410,10 +291,8 @@ struct DataFieldRow: View {
 }
 
 #Preview {
-    SummaryPanel(
-        appState: AppState.shared,
-        viewModel: SessionViewModel(sessionId: UUID()),
-        selectedScreenshotId: .constant(nil)
-    )
+    VStack {
+        EmptyStateView()
+    }
     .frame(width: 400, height: 600)
 }

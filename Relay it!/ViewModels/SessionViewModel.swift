@@ -15,12 +15,33 @@ struct ChatMessage: Identifiable {
     let isUser: Bool
     let text: String
     let timestamp: Date
+    // v2 fields
+    let intent: String?
+    let noteOperationType: String?
+    let noteOperationContent: String?
+    let referencedScreenshotIds: [String]?
+    let suggestedFollowUps: [String]?
     
-    init(id: UUID = UUID(), isUser: Bool, text: String, timestamp: Date = Date()) {
+    init(
+        id: UUID = UUID(),
+        isUser: Bool,
+        text: String,
+        timestamp: Date = Date(),
+        intent: String? = nil,
+        noteOperationType: String? = nil,
+        noteOperationContent: String? = nil,
+        referencedScreenshotIds: [String]? = nil,
+        suggestedFollowUps: [String]? = nil
+    ) {
         self.id = id
         self.isUser = isUser
         self.text = text
         self.timestamp = timestamp
+        self.intent = intent
+        self.noteOperationType = noteOperationType
+        self.noteOperationContent = noteOperationContent
+        self.referencedScreenshotIds = referencedScreenshotIds
+        self.suggestedFollowUps = suggestedFollowUps
     }
 }
 
@@ -62,6 +83,7 @@ class SessionViewModel: ObservableObject {
     @Published var chatMessages: [ChatMessage] = []
     @Published var chatInput = ""
     @Published var isChatLoading = false
+    @Published var lastSuggestedFollowUps: [String]?
     
     // Session summary (from regenerate API)
     @Published var sessionSummary: String?
@@ -73,9 +95,15 @@ class SessionViewModel: ObservableObject {
     @Published var isNoteSaving = false
     @Published var aiHighlightStartIndex: Int = -1  // Character index where AI text starts
     @Published var aiHighlightActive = false        // Whether to show highlight
+    @Published var aiSuggestionHint: String?
+    @Published var cursorInsertionIndex: Int = 0
+    @Published var cursorAnchor: CGPoint = .zero
+
     private var lastSavedContent: String = ""  // Track what was last saved
     private var saveTask: Task<Void, Never>?
     private var highlightTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
+    private var lastCheckedContent: String = ""
     private var cancellables = Set<AnyCancellable>()
 
     private let supabase = SupabaseService.shared
@@ -96,6 +124,14 @@ class SessionViewModel: ObservableObject {
                 Task {
                     await self.saveNote()
                 }
+            }
+            .store(in: &cancellables)
+
+        $noteContent
+            .dropFirst()
+            .debounce(for: .seconds(6), scheduler: RunLoop.main)
+            .sink { [weak self] newContent in
+                self?.checkForAISuggestion(newContent)
             }
             .store(in: &cancellables)
     }
@@ -243,14 +279,11 @@ class SessionViewModel: ObservableObject {
         return keywords.contains { lowered.contains($0) }
     }
     
-    /// Send a chat message with selected entities context
-    /// Send a chat message with full context to the Chat API
+    /// Send a chat message with conversation history and full context (v2)
     func sendChatMessage() async {
         let userMessage = chatInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !userMessage.isEmpty else { return }
         
-        // Save note length BEFORE API call for accurate highlight positioning
-        // Use UTF-16 length for NSTextStorage compatibility
         let noteContentLengthBeforeAPI = (noteContent as NSString).length
         
         // UI Updates
@@ -258,6 +291,7 @@ class SessionViewModel: ObservableObject {
         chatMessages.append(userChatMsg)
         chatInput = ""
         isChatLoading = true
+        lastSuggestedFollowUps = nil
         
         defer { isChatLoading = false }
         
@@ -266,17 +300,21 @@ class SessionViewModel: ObservableObject {
             try? await supabase.saveChatMessage(sessionId: sessionId, role: "user", content: userMessage)
         }
         
-        // Prepare Context
+        // Build conversation history (last 20 messages)
+        let history: [APIService.ChatHistoryMessage] = chatMessages
+            .dropLast()  // exclude the message we just appended
+            .suffix(20)
+            .map { APIService.ChatHistoryMessage(role: $0.isUser ? "user" : "assistant", content: $0.text) }
+        
+        // Build screenshot context
         let chatScreenshots = screenshots.compactMap { screen -> APIService.ChatScreenshot? in
             let entity = entities.first { $0.screenshotIds.contains(screen.id) }
-            // Get summary from entity attributes if available
             var summary = ""
             if let entity = entity, let sum = entity.data["summary"]?.value as? String {
                 summary = sum
             } else if let entity = entity, let sum = entity.data["condensed_summary"]?.value as? String {
                 summary = sum
             }
-            
             return APIService.ChatScreenshot(
                 id: screen.id.uuidString,
                 rawText: screen.rawText ?? "",
@@ -284,9 +322,27 @@ class SessionViewModel: ObservableObject {
             )
         }
         
+        // Build entity context
+        let chatEntities: [APIService.ChatEntity] = entities
+            .filter { $0.entityType != "ai-summary" }
+            .map { entity in
+                var attrs: [String: String] = [:]
+                for (key, value) in entity.data {
+                    if let str = value.value as? String {
+                        attrs[key] = str
+                    }
+                }
+                return APIService.ChatEntity(
+                    type: entity.entityType ?? "generic",
+                    title: attrs["title"],
+                    attributes: attrs
+                )
+            }
+        
         let context = APIService.ChatContext(
             screenshots: chatScreenshots,
-            sessionName: sessionSummary, 
+            entities: chatEntities.isEmpty ? nil : chatEntities,
+            sessionName: sessionSummary,
             sessionCategory: sessionCategory
         )
         
@@ -294,37 +350,62 @@ class SessionViewModel: ObservableObject {
             let response = try await api.chat(
                 sessionId: sessionId,
                 userMessage: userMessage,
+                conversationHistory: history.isEmpty ? nil : history,
                 currentNote: noteContent,
                 context: context
             )
             
-            // Handle Response
-            let aiMsg = ChatMessage(isUser: false, text: response.reply)
+            // Determine note operation from v2 or fall back to v1
+            let noteOpType = response.noteOperation?.type
+            let noteOpContent = response.noteOperation?.content
+            
+            let aiMsg = ChatMessage(
+                isUser: false,
+                text: response.reply,
+                intent: response.intent,
+                noteOperationType: noteOpType,
+                noteOperationContent: noteOpContent,
+                referencedScreenshotIds: response.referencedScreenshots,
+                suggestedFollowUps: response.suggestedFollowUps
+            )
             chatMessages.append(aiMsg)
+            
+            // Update suggested follow-ups
+            lastSuggestedFollowUps = response.suggestedFollowUps
             
             // Save AI message
             Task {
-                try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: response.reply)
+                _ = try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: response.reply)
             }
             
-            // Update Note
-            if response.noteWasModified, let updatedContent = response.updatedNote {
-                // AI modified the note directly
+            // Handle note operations (v2 format)
+            if let operation = response.noteOperation {
+                switch operation.type {
+                case "append":
+                    if let content = operation.content, !content.isEmpty {
+                        await MainActor.run {
+                            self.appendToNote(content)
+                        }
+                    }
+                case "replace":
+                    if let content = operation.content {
+                        await MainActor.run {
+                            self.noteContent = content
+                            self.triggerAIHighlight(startIndex: 0)
+                        }
+                    }
+                default:
+                    break  // no_change
+                }
+            }
+            // v1 backward compatibility fallback
+            else if response.noteWasModified == true, let updatedContent = response.updatedNote {
                 await MainActor.run {
                     let updatedLength = (updatedContent as NSString).length
                     self.noteContent = updatedContent
-                    
-                    // Only highlight if new content was actually added
                     if updatedLength > noteContentLengthBeforeAPI {
-                        // Highlight starts where original content ended
                         self.triggerAIHighlight(startIndex: noteContentLengthBeforeAPI)
                     }
-                }
-            } else {
-                // AI answered a question - append to note log
-                let chatLog = "---\n\n**You:** \(userMessage)\n\n**AI:** \(response.reply)"
-                await MainActor.run {
-                    self.appendToNote(chatLog)
                 }
             }
             
@@ -502,17 +583,51 @@ class SessionViewModel: ObservableObject {
     
     /// Append text to the note (used by AI)
     func appendToNote(_ text: String) {
-        // Track where new text will start using UTF-16 length for NSTextStorage compatibility
         let startIndex: Int
         if noteContent.isEmpty {
             startIndex = 0
             noteContent = text
         } else {
-            // Use UTF-16 count for accurate NSTextStorage positioning
-            startIndex = (noteContent as NSString).length + 2  // +2 for "\n\n"
+            startIndex = (noteContent as NSString).length + 2
             noteContent += "\n\n" + text
         }
         triggerAIHighlight(startIndex: startIndex)
+    }
+
+    /// Insert text at cursor position (used by AI callout)
+    func insertAtCursor(_ text: String) {
+        let nsText = noteContent as NSString
+        let safeIndex = min(max(0, cursorInsertionIndex), nsText.length)
+
+        let prefix = nsText.substring(to: safeIndex)
+        let suffix = nsText.substring(from: safeIndex)
+
+        let needsLeadingBreak = !prefix.isEmpty && !prefix.hasSuffix("\n")
+        let needsTrailingBreak = !suffix.isEmpty && !suffix.hasPrefix("\n")
+
+        var insertion = text
+        if needsLeadingBreak {
+            insertion = "\n" + insertion
+        }
+        if needsTrailingBreak {
+            insertion += "\n"
+        }
+
+        noteContent = prefix + insertion + suffix
+        let insertedLength = (insertion as NSString).length
+        cursorInsertionIndex = safeIndex + insertedLength
+        triggerAIHighlight(startIndex: safeIndex + (needsLeadingBreak ? 1 : 0))
+    }
+
+    func updateCursorPosition(index: Int, anchor: CGPoint?) {
+        cursorInsertionIndex = max(0, index)
+        if let anchor {
+            cursorAnchor = anchor
+        }
+    }
+
+    func dismissAISuggestionHint() {
+        aiSuggestionHint = nil
     }
     
     /// Trigger highlight effect for AI-inserted text at given start index
@@ -535,6 +650,148 @@ class SessionViewModel: ObservableObject {
         }
     }
     
+    func runInlineAICallout(prompt: String) async throws {
+        let history: [APIService.ChatHistoryMessage] = chatMessages
+            .suffix(20)
+            .map { APIService.ChatHistoryMessage(role: $0.isUser ? "user" : "assistant", content: $0.text) }
+
+        let context = buildChatContext()
+
+        let response = try await api.chat(
+            sessionId: sessionId,
+            userMessage: prompt,
+            conversationHistory: history.isEmpty ? nil : history,
+            currentNote: noteContent,
+            context: context
+        )
+
+        let userMessage = ChatMessage(isUser: true, text: prompt)
+        let aiMessage = ChatMessage(
+            isUser: false,
+            text: response.reply,
+            intent: response.intent,
+            noteOperationType: response.noteOperation?.type,
+            noteOperationContent: response.noteOperation?.content,
+            referencedScreenshotIds: response.referencedScreenshots,
+            suggestedFollowUps: response.suggestedFollowUps
+        )
+        chatMessages.append(userMessage)
+        chatMessages.append(aiMessage)
+
+        Task {
+            _ = try? await supabase.saveChatMessage(sessionId: sessionId, role: "user", content: prompt)
+            _ = try? await supabase.saveChatMessage(sessionId: sessionId, role: "assistant", content: response.reply)
+        }
+
+        if let operation = response.noteOperation {
+            switch operation.type {
+            case "replace":
+                if let content = operation.content {
+                    noteContent = content
+                    cursorInsertionIndex = (content as NSString).length
+                    triggerAIHighlight(startIndex: 0)
+                    return
+                }
+            case "append":
+                if let content = operation.content, !content.isEmpty {
+                    insertAtCursor(content)
+                    return
+                }
+            default:
+                break
+            }
+        }
+
+        if response.noteWasModified == true, let updatedContent = response.updatedNote {
+            let oldLength = (noteContent as NSString).length
+            noteContent = updatedContent
+            if (updatedContent as NSString).length > oldLength {
+                triggerAIHighlight(startIndex: oldLength)
+            }
+            return
+        }
+
+        insertAtCursor(response.reply)
+    }
+
+    private func buildChatContext() -> APIService.ChatContext {
+        let chatScreenshots = screenshots.compactMap { screen -> APIService.ChatScreenshot? in
+            let entity = entities.first { $0.screenshotIds.contains(screen.id) }
+            var summary = ""
+            if let entity, let sum = entity.data["summary"]?.value as? String {
+                summary = sum
+            } else if let entity, let sum = entity.data["condensed_summary"]?.value as? String {
+                summary = sum
+            }
+            return APIService.ChatScreenshot(
+                id: screen.id.uuidString,
+                rawText: screen.rawText ?? "",
+                summary: summary
+            )
+        }
+
+        let chatEntities: [APIService.ChatEntity] = entities
+            .filter { $0.entityType != "ai-summary" }
+            .map { entity in
+                var attrs: [String: String] = [:]
+                for (key, value) in entity.data {
+                    if let str = value.value as? String {
+                        attrs[key] = str
+                    }
+                }
+                return APIService.ChatEntity(
+                    type: entity.entityType ?? "generic",
+                    title: attrs["title"],
+                    attributes: attrs
+                )
+            }
+
+        return APIService.ChatContext(
+            screenshots: chatScreenshots,
+            entities: chatEntities.isEmpty ? nil : chatEntities,
+            sessionName: sessionSummary,
+            sessionCategory: sessionCategory
+        )
+    }
+
+    private func checkForAISuggestion(_ newContent: String) {
+        heartbeatTask?.cancel()
+
+        heartbeatTask = Task { @MainActor in
+            guard !Task.isCancelled else { return }
+
+            let delta = extractDelta(from: lastCheckedContent, to: newContent)
+            lastCheckedContent = newContent
+
+            guard delta.count > 30 else {
+                aiSuggestionHint = nil
+                return
+            }
+
+            let lowered = delta.lowercased()
+            if screenshots.count > 0 && newContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                aiSuggestionHint = "Press space to summarize your captures"
+            } else if delta.contains("- ") || delta.contains("* ") {
+                aiSuggestionHint = "Press space to summarize this list"
+            } else if lowered.contains("vs") || lowered.contains("compare") {
+                aiSuggestionHint = "Press space to add a comparison table"
+            } else if delta.count > 180 {
+                aiSuggestionHint = "Press space to clean up formatting"
+            } else {
+                aiSuggestionHint = "Press space for AI help on this section"
+            }
+        }
+    }
+
+    private func extractDelta(from previous: String, to current: String) -> String {
+        if previous.isEmpty { return current }
+        if current.hasPrefix(previous) {
+            let idx = current.index(current.startIndex, offsetBy: previous.count)
+            return String(current[idx...])
+        }
+        return current
+    }
+
     /// Insert analysis from screenshot into note
     func addAnalysisToNote(summary: String, userIntent: String?, title: String?) {
         var insertText = ""

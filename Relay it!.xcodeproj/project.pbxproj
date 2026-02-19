@@ -39,6 +39,9 @@
 		4E6A3E222F1C954F0021B8B5 /* AISummaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E6A3E212F1C954F0021B8B5 /* AISummaryCard.swift */; };
 		4E6A3E242F1CBE6E0021B8B5 /* SessionNote.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E6A3E232F1CBE6E0021B8B5 /* SessionNote.swift */; };
 		4E6A3E262F1CBE790021B8B5 /* NoteEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E6A3E252F1CBE790021B8B5 /* NoteEditorView.swift */; };
+		4E6A3E282F1DC0010021B8B5 /* ChatPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E6A3E272F1DC0010021B8B5 /* ChatPanel.swift */; };
+		4E6A3E2A2F1DC0020021B8B5 /* SessionSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E6A3E292F1DC0020021B8B5 /* SessionSidebar.swift */; };
+		4E6A3E2C2F1E00010021B8B5 /* AICalloutPopup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E6A3E2B2F1E00010021B8B5 /* AICalloutPopup.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -95,6 +98,9 @@
 		4E6A3E212F1C954F0021B8B5 /* AISummaryCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISummaryCard.swift; sourceTree = "<group>"; };
 		4E6A3E232F1CBE6E0021B8B5 /* SessionNote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionNote.swift; sourceTree = "<group>"; };
 		4E6A3E252F1CBE790021B8B5 /* NoteEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteEditorView.swift; sourceTree = "<group>"; };
+		4E6A3E272F1DC0010021B8B5 /* ChatPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPanel.swift; sourceTree = "<group>"; };
+		4E6A3E292F1DC0020021B8B5 /* SessionSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionSidebar.swift; sourceTree = "<group>"; };
+		4E6A3E2B2F1E00010021B8B5 /* AICalloutPopup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AICalloutPopup.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -200,6 +206,9 @@
 		4E6A3DE62F1B8D080021B8B5 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				4E6A3E272F1DC0010021B8B5 /* ChatPanel.swift */,
+				4E6A3E2B2F1E00010021B8B5 /* AICalloutPopup.swift */,
+				4E6A3E292F1DC0020021B8B5 /* SessionSidebar.swift */,
 				4E6A3E252F1CBE790021B8B5 /* NoteEditorView.swift */,
 				4E6A3E212F1C954F0021B8B5 /* AISummaryCard.swift */,
 				4E6A3E172F1C23920021B8B5 /* FloatingHUD.swift */,
@@ -396,6 +405,9 @@
 				4E6A3E042F1B93820021B8B5 /* APIService.swift in Sources */,
 				4E6A3DF42F1B8D080021B8B5 /* LoginView.swift in Sources */,
 				4E6A3DF62F1B8D080021B8B5 /* TimelinePanel.swift in Sources */,
+				4E6A3E282F1DC0010021B8B5 /* ChatPanel.swift in Sources */,
+				4E6A3E2C2F1E00010021B8B5 /* AICalloutPopup.swift in Sources */,
+				4E6A3E2A2F1DC0020021B8B5 /* SessionSidebar.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

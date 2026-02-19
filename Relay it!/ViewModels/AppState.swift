@@ -190,12 +190,7 @@ class AppState: ObservableObject {
                 data: summaryData
             )
             
-            // Notify that entities were updated
             NotificationCenter.default.post(name: .entityUpdated, object: nil)
-            
-            // Show success HUD
-            let message = createNewSession ? "New Summary!" : "Summarized!"
-            FloatingHUD.shared.show(message: message, icon: "doc.text")
             
         } catch {
             self.error = .createFailed(error.localizedDescription)
@@ -343,21 +338,13 @@ class AppState: ObservableObject {
         defer { isSummarizing = false }
         
         do {
-            // Fetch all entities from current session (exclude existing summaries)
+            // Fetch entities and screenshots
             let allEntities = try await supabase.fetchExtractedInfo(sessionId: currentId)
             let entities = allEntities.filter { $0.entityType != "ai-summary" }
+            let screenshots = try await supabase.fetchScreenshots(sessionId: currentId)
             
-            guard !entities.isEmpty else {
-                error = .loadFailed("No data to summarize. Capture some screenshots first!")
-                return
-            }
-            
-            // Get current session name
-            let currentSession = sessions.first { $0.id == currentId }
-            let baseName = currentSession?.name ?? "Session"
-            
-            // Convert entities to API format
-            let apiEntities: [APIService.Entity] = entities.map { entity in
+            // Build API entities from extracted info, OR from screenshot rawText as fallback
+            var apiEntities: [APIService.Entity] = entities.map { entity in
                 var attrs: [String: String] = [:]
                 for (key, value) in entity.data {
                     if let str = value.value as? String {
@@ -371,14 +358,37 @@ class AppState: ObservableObject {
                 )
             }
             
-            // Call AI summarize/regenerate API
+            // If no entities but screenshots have rawText, create entities from screenshots
+            if apiEntities.isEmpty {
+                let screenshotEntities = screenshots.compactMap { screen -> APIService.Entity? in
+                    guard let text = screen.rawText, !text.isEmpty else { return nil }
+                    return APIService.Entity(
+                        type: "screenshot",
+                        title: "Screenshot \(screen.orderIndex + 1)",
+                        attributes: ["raw_text": text]
+                    )
+                }
+                apiEntities = screenshotEntities
+            }
+            
+            guard !apiEntities.isEmpty else {
+                if screenshots.isEmpty {
+                    error = .loadFailed("No screenshots to summarize. Press Cmd+Shift+E to capture some!")
+                } else {
+                    error = .loadFailed("Screenshots are still being analyzed. Please wait a moment and try again.")
+                }
+                return
+            }
+            
+            let currentSession = sessions.first { $0.id == currentId }
+            let baseName = currentSession?.name ?? "Session"
+            
             let response = try await api.summarizeSession(
                 sessionId: currentId,
                 sessionName: baseName,
                 entities: apiEntities
             )
             
-            // Build markdown content from response
             var noteContent = "# \(response.suggestedTitle)\n\n"
             noteContent += response.condensedSummary + "\n\n"
             
@@ -398,11 +408,7 @@ class AppState: ObservableObject {
                 noteContent += "\n"
             }
             
-            // Append to note
             viewModel.appendToNote(noteContent)
-            
-            // Show success HUD
-            FloatingHUD.shared.show(message: "Added to Note!", icon: "doc.text")
             
         } catch {
             self.error = .createFailed(error.localizedDescription)

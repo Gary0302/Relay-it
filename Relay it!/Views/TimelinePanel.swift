@@ -44,9 +44,12 @@ struct TimelinePanel: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(viewModel.screenshots) { screenshot in
+                            let entity = viewModel.entities.first { $0.screenshotIds.contains(screenshot.id) }
                             ScreenshotRow(
                                 screenshot: screenshot,
                                 isSelected: selectedScreenshotId == screenshot.id,
+                                entitySummary: entity?.getString("summary"),
+                                entityType: entity?.entityType,
                                 onTap: {
                                     selectedScreenshotId = screenshot.id
                                 }
@@ -133,13 +136,13 @@ struct TimelineEmptyView: View {
 struct ScreenshotRow: View {
     let screenshot: Screenshot
     let isSelected: Bool
+    let entitySummary: String?
+    let entityType: String?
     let onTap: () -> Void
-    
-    @State private var thumbnailImage: NSImage?
     
     var body: some View {
         HStack(spacing: 12) {
-            // Thumbnail - add cache-busting param to prevent stale images
+            // Thumbnail
             let imageURL = URL(string: "\(screenshot.imageUrl)?v=\(screenshot.id.uuidString)")
             AsyncImage(url: imageURL) { phase in
                 switch phase {
@@ -161,23 +164,39 @@ struct ScreenshotRow: View {
                 }
             }
             
-            // Info
             VStack(alignment: .leading, spacing: 4) {
-                Text(formatTime(screenshot.createdAt))
-                    .font(.callout.bold())
-                    .foregroundStyle(Color.themeText)
-
-                if let text = screenshot.rawText, !text.isEmpty {
-                    Text(text)
+                HStack(spacing: 6) {
+                    Text(formatTime(screenshot.createdAt))
+                        .font(.callout.bold())
+                        .foregroundStyle(Color.themeText)
+                    
+                    if let type = entityType, !type.isEmpty {
+                        Text(type.replacingOccurrences(of: "-", with: " ").capitalized)
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.themeAccent.opacity(0.15))
+                            .foregroundStyle(Color.themeAccent)
+                            .clipShape(Capsule())
+                    }
+                }
+                
+                // Show summary (extracted info) instead of raw OCR
+                if let summary = entitySummary, !summary.isEmpty {
+                    Text(summary)
                         .font(.caption)
                         .foregroundStyle(Color.themeTextSecondary)
+                        .lineLimit(2)
+                } else if let text = screenshot.rawText, !text.isEmpty {
+                    Text(text)
+                        .font(.caption)
+                        .foregroundStyle(Color.themeTextTertiary)
                         .lineLimit(2)
                 }
             }
 
             Spacer()
 
-            // Source button
             Button(action: onTap) {
                 Image(systemName: "arrow.up.right.circle")
                     .font(.title3)

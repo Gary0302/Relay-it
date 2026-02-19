@@ -78,17 +78,16 @@ struct ScreenshotDetailModal: View {
                         }
                     }
                     
-                    // AI Analysis Section
-                    if !relatedEntities.isEmpty {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Label("AI Analysis", systemImage: "sparkles")
-                                    .font(.headline)
-                                    .foregroundStyle(Color.themeText)
-                                
-                                Spacer()
-                                
-                                // Add to Note button
+                    // Extracted Information section
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label("Extracted Information", systemImage: "sparkles")
+                                .font(.headline)
+                                .foregroundStyle(Color.themeText)
+                            
+                            Spacer()
+                            
+                            if !relatedEntities.isEmpty || (screenshot.rawText != nil && !screenshot.rawText!.isEmpty) {
                                 Button(action: addToNote) {
                                     HStack(spacing: 4) {
                                         Image(systemName: addedToNote ? "checkmark" : "doc.badge.plus")
@@ -97,22 +96,31 @@ struct ScreenshotDetailModal: View {
                                     .font(.callout.weight(.medium))
                                 }
                                 .buttonStyle(.borderedProminent)
-                                .tint(addedToNote ? Color.green : Color.themeAccent)
+                                .tint(addedToNote ? Color.themeSuccess : Color.themeAccent)
                                 .disabled(addedToNote)
                             }
-                            
+                        }
+                        
+                        if relatedEntities.isEmpty {
+                            HStack(spacing: 8) {
+                                Image(systemName: "info.circle")
+                                    .foregroundStyle(Color.themeTextTertiary)
+                                Text("No analysis available yet. The AI may still be processing this screenshot.")
+                                    .font(.callout)
+                                    .foregroundStyle(Color.themeTextSecondary)
+                            }
+                            .padding(.vertical, 4)
+                        } else {
                             ForEach(relatedEntities) { entity in
                                 AnalysisCard(entity: entity)
                             }
                         }
-                        .padding()
-                        .background(Color.themeSurface)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
+                    .padding()
+                    .background(Color.themeSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                     
-                    Divider()
-                    
-                    // OCR Text (collapsed by default)
+                    // Raw text (collapsible, secondary)
                     DisclosureGroup {
                         if isEditing {
                             TextEditor(text: $editedText)
@@ -155,9 +163,9 @@ struct ScreenshotDetailModal: View {
                             }
                         }
                     } label: {
-                        Text("Extracted Text (OCR)")
+                        Text("Raw Text")
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Color.themeTextSecondary)
+                            .foregroundStyle(Color.themeTextTertiary)
                     }
                     .padding()
                     .background(Color.themeSurface)
@@ -177,13 +185,16 @@ struct ScreenshotDetailModal: View {
     }
     
     private func addToNote() {
-        guard let entity = relatedEntities.first else { return }
-        
-        let summary = entity.getString("summary") ?? ""
-        let intent = entity.getString("user_intent")
-        let title = entity.getString("title")
-        
-        viewModel.addAnalysisToNote(summary: summary, userIntent: intent, title: title)
+        if let entity = relatedEntities.first {
+            let summary = entity.getString("summary") ?? ""
+            let intent = entity.getString("user_intent")
+            let title = entity.getString("title")
+            viewModel.addAnalysisToNote(summary: summary, userIntent: intent, title: title)
+        } else if let rawText = screenshot.rawText, !rawText.isEmpty {
+            viewModel.appendToNote("## Screenshot \(screenshot.orderIndex + 1)\n\n\(rawText)")
+        } else {
+            return
+        }
         addedToNote = true
     }
     
@@ -209,43 +220,79 @@ struct ScreenshotDetailModal: View {
 private struct AnalysisCard: View {
     let entity: ExtractedInfo
     
+    private var displayAttributes: [(key: String, value: String)] {
+        let skipKeys: Set<String> = ["title", "summary", "category", "user_intent", "is_comparison", "decision_point", "related_topics"]
+        return entity.data
+            .filter { !skipKeys.contains($0.key) }
+            .compactMap { key, value -> (key: String, value: String)? in
+                guard let str = value.value as? String, !str.isEmpty else { return nil }
+                return (key: key.replacingOccurrences(of: "_", with: " ").capitalized, value: str)
+            }
+            .sorted { $0.key < $1.key }
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Title
-            if let title = entity.getString("title"), !title.isEmpty {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.themeText)
+            // Category + Title row
+            HStack(spacing: 8) {
+                if let type = entity.entityType, !type.isEmpty {
+                    Text(type.replacingOccurrences(of: "-", with: " ").capitalized)
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.themeAccent.opacity(0.15))
+                        .foregroundStyle(Color.themeAccent)
+                        .clipShape(Capsule())
+                }
+                
+                if let title = entity.getString("title"), !title.isEmpty {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.themeText)
+                }
             }
             
             // Summary
             if let summary = entity.getString("summary"), !summary.isEmpty {
                 Text(summary)
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(Color.themeTextSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             
             // User Intent
             if let intent = entity.getString("user_intent"), !intent.isEmpty {
-                HStack(alignment: .top, spacing: 4) {
+                HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "target")
                         .font(.caption2)
                         .foregroundStyle(Color.themeAccent)
+                        .padding(.top, 2)
                     Text(intent)
                         .font(.caption.italic())
                         .foregroundStyle(Color.themeText)
                 }
             }
             
-            // Category badge
-            if let type = entity.entityType, !type.isEmpty {
-                Text(type.replacingOccurrences(of: "-", with: " ").capitalized)
-                    .font(.caption2.weight(.medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(Color.themeAccent.opacity(0.2))
-                    .foregroundStyle(Color.themeAccent)
-                    .clipShape(Capsule())
+            // Additional extracted attributes
+            if !displayAttributes.isEmpty {
+                Divider()
+                    .background(Color.themeDivider)
+                
+                ForEach(displayAttributes, id: \.key) { attr in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(attr.key)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Color.themeTextTertiary)
+                            .frame(width: 80, alignment: .trailing)
+                        
+                        Text(attr.value)
+                            .font(.caption)
+                            .foregroundStyle(Color.themeText)
+                            .textSelection(.enabled)
+                        
+                        Spacer()
+                    }
+                }
             }
         }
         .padding(12)

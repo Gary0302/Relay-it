@@ -197,10 +197,22 @@ class APIService: ObservableObject {
         return try await post("/api/summarize", body: request)
     }
     
-    // MARK: - Chat
+    // MARK: - Chat (v2)
+    
+    struct ChatHistoryMessage: Codable {
+        let role: String
+        let content: String
+    }
+    
+    struct ChatEntity: Encodable {
+        let type: String
+        let title: String?
+        let attributes: [String: String]
+    }
     
     struct ChatContext: Encodable {
         let screenshots: [ChatScreenshot]?
+        let entities: [ChatEntity]?
         let sessionName: String?
         let sessionCategory: String?
     }
@@ -214,21 +226,40 @@ class APIService: ObservableObject {
     struct ChatRequest: Encodable {
         let sessionId: String
         let userMessage: String
+        let conversationHistory: [ChatHistoryMessage]?
         let currentNote: String
         let context: ChatContext?
     }
     
-    struct ChatResponse: Decodable {
-        let reply: String
-        let updatedNote: String?
-        let noteWasModified: Bool
+    struct NoteOperation: Decodable {
+        let type: String      // "append", "replace", "no_change"
+        let content: String?
+        let section: String?
     }
     
-    /// Send chat message to AI with note modification capabilities
-    func chat(sessionId: UUID, userMessage: String, currentNote: String, context: ChatContext?) async throws -> ChatResponse {
+    struct ChatResponse: Decodable {
+        let reply: String
+        let intent: String?
+        let noteOperation: NoteOperation?
+        let referencedScreenshots: [String]?
+        let suggestedFollowUps: [String]?
+        // v1 backward compat
+        let updatedNote: String?
+        let noteWasModified: Bool?
+    }
+    
+    /// Send chat message to AI with conversation history and structured context
+    func chat(
+        sessionId: UUID,
+        userMessage: String,
+        conversationHistory: [ChatHistoryMessage]?,
+        currentNote: String,
+        context: ChatContext?
+    ) async throws -> ChatResponse {
         let request = ChatRequest(
             sessionId: sessionId.uuidString,
             userMessage: userMessage,
+            conversationHistory: conversationHistory,
             currentNote: currentNote,
             context: context
         )

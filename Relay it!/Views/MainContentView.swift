@@ -7,16 +7,18 @@
 
 import SwiftUI
 
-/// Main content view with split panels
+/// Main content view with sidebar + center note editor
 struct MainContentView: View {
     @StateObject private var appState = AppState.shared
     @StateObject private var auth = AuthService.shared
     
     @State private var isSidebarVisible = true
+    @State private var isScreenshotPanelVisible = false
     @State private var selectedScreenshotId: UUID?
     @State private var showingScreenshotDetail = false
     
-    private let sidebarWidth: CGFloat = 320
+    private let sidebarWidth: CGFloat = 260
+    private let screenshotPanelWidth: CGFloat = 300
     
     var body: some View {
         Group {
@@ -39,133 +41,180 @@ struct MainContentView: View {
     }
     
     private var authenticatedContent: some View {
-        VStack(spacing: 0) {
-            // Top toolbar with logout
-            HStack(spacing: 12) {
-                // App icon and title
-                HStack(spacing: 8) {
-                    Image("AppLogo")
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 28, height: 28)
-
-                    Text("Relay it!")
-                        .font(.title2.bold())
-                        .foregroundStyle(Color.themeText)
-                }
-
-                Spacer()
-                
-                // Sidebar toggle
-                Button(action: { withAnimation { isSidebarVisible.toggle() } }) {
-                    Image(systemName: "sidebar.right")
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(isSidebarVisible ? Color.themeAccent : Color.themeTextSecondary)
-                .help("Toggle Screenshots Sidebar")
-
-                Divider()
-                    .frame(height: 20)
-
-                // User account name
-                if let user = auth.currentUser {
-                    Text(accountName(from: user.email))
-                        .font(.callout)
-                        .foregroundStyle(Color.themeTextSecondary)
-                }
-
-                // Logout button
-                Button("Logout") {
-                    Task {
-                        try? await auth.signOut()
-                    }
-                }
-                .buttonStyle(.bordered)
-                .foregroundStyle(Color.themeAccent)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Color.themeSurface)
-            
-            Divider()
-            
-            // Session tabs
-            SessionTabBar(appState: appState)
-            
-            Divider()
-            
-            // Main content
-            if let sessionId = appState.currentSessionId {
-                SessionContentView(
+        HStack(spacing: 0) {
+            // Left sidebar (sessions)
+            if isSidebarVisible {
+                SessionSidebar(
                     appState: appState,
-                    sessionId: sessionId,
-                    isSidebarVisible: $isSidebarVisible,
-                    selectedScreenshotId: $selectedScreenshotId,
-                    showingScreenshotDetail: $showingScreenshotDetail,
-                    sidebarWidth: sidebarWidth
+                    auth: auth,
+                    onCollapse: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isSidebarVisible = false
+                        }
+                    }
                 )
-                .id(sessionId)  // Force rebuild when session changes
-            } else {
-                NoSessionView(appState: appState)
+                .frame(width: sidebarWidth)
+                .transition(.move(edge: .leading).combined(with: .opacity))
+                
+                Divider()
+                    .background(Color.themeDivider)
             }
+            
+            // Center: main note area
+            VStack(spacing: 0) {
+                // Top header bar
+                sessionHeader
+                
+                Divider()
+                    .background(Color.themeDivider)
+                
+                // Session content
+                if let sessionId = appState.currentSessionId {
+                    SessionContentView(
+                        appState: appState,
+                        sessionId: sessionId,
+                        isScreenshotPanelVisible: $isScreenshotPanelVisible,
+                        selectedScreenshotId: $selectedScreenshotId,
+                        showingScreenshotDetail: $showingScreenshotDetail,
+                        screenshotPanelWidth: screenshotPanelWidth
+                    )
+                    .id(sessionId)
+                } else {
+                    NoSessionView(appState: appState)
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
         .frame(minWidth: 800, minHeight: 600)
         .task {
             await appState.loadSessions()
         }
     }
-
-    /// Extract account name from email (part before @)
-    private func accountName(from email: String?) -> String {
-        guard let email = email,
-              let atIndex = email.firstIndex(of: "@") else {
-            return "Account"
+    
+    private var sessionHeader: some View {
+        HStack(spacing: 12) {
+            // Sidebar toggle (show when sidebar is hidden)
+            if !isSidebarVisible {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isSidebarVisible = true
+                    }
+                }) {
+                    Image(systemName: "sidebar.left")
+                        .font(.body)
+                        .foregroundStyle(Color.themeTextSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Show sidebar")
+            }
+            
+            // App logo + session name
+            HStack(spacing: 8) {
+                Image("AppLogo")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 22, height: 22)
+                
+                if let session = appState.currentSession {
+                    Text(session.name)
+                        .font(.headline)
+                        .foregroundStyle(Color.themeText)
+                        .lineLimit(1)
+                } else {
+                    Text("Relay it!")
+                        .font(.headline)
+                        .foregroundStyle(Color.themeText)
+                }
+            }
+            
+            Spacer()
+            
+            // Screenshot panel toggle
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isScreenshotPanelVisible.toggle()
+                }
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "photo.stack")
+                        .font(.callout)
+                    if let sessionId = appState.currentSessionId {
+                        ScreenshotCountBadge(appState: appState, sessionId: sessionId)
+                    }
+                }
+                .foregroundStyle(isScreenshotPanelVisible ? Color.themeAccent : Color.themeTextSecondary)
+            }
+            .buttonStyle(.plain)
+            .help("Toggle screenshots panel")
+            
+            // Capture button
+            Button(action: {
+                Task { await appState.captureScreenshot() }
+            }) {
+                Image(systemName: "camera.fill")
+                    .font(.callout)
+                    .foregroundStyle(Color.themeAccent)
+            }
+            .buttonStyle(.plain)
+            .help("Capture screenshot (Cmd+Shift+E)")
         }
-        let name = String(email[..<atIndex])
-        return name.capitalized
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.themeSurface)
+    }
+}
+
+/// Displays screenshot count; needs session context to observe the viewModel
+struct ScreenshotCountBadge: View {
+    @ObservedObject var appState: AppState
+    let sessionId: UUID
+    
+    var body: some View {
+        // Badge will be updated via the SessionContentView's viewModel
+        // For now show a simple indicator
+        EmptyView()
     }
 }
 
 struct SessionContentView: View {
     @ObservedObject var appState: AppState
     let sessionId: UUID
-    @Binding var isSidebarVisible: Bool
+    @Binding var isScreenshotPanelVisible: Bool
     @Binding var selectedScreenshotId: UUID?
     @Binding var showingScreenshotDetail: Bool
-    let sidebarWidth: CGFloat
+    let screenshotPanelWidth: CGFloat
     
     @StateObject private var viewModel: SessionViewModel
     
     init(
         appState: AppState,
         sessionId: UUID,
-        isSidebarVisible: Binding<Bool>,
+        isScreenshotPanelVisible: Binding<Bool>,
         selectedScreenshotId: Binding<UUID?>,
         showingScreenshotDetail: Binding<Bool>,
-        sidebarWidth: CGFloat
+        screenshotPanelWidth: CGFloat
     ) {
         self.appState = appState
         self.sessionId = sessionId
-        self._isSidebarVisible = isSidebarVisible
+        self._isScreenshotPanelVisible = isScreenshotPanelVisible
         self._selectedScreenshotId = selectedScreenshotId
         self._showingScreenshotDetail = showingScreenshotDetail
-        self.sidebarWidth = sidebarWidth
+        self.screenshotPanelWidth = screenshotPanelWidth
         self._viewModel = StateObject(wrappedValue: SessionViewModel(sessionId: sessionId))
     }
     
     var body: some View {
         HStack(spacing: 0) {
-            // Main Content Area (Summary + Chat)
-            SummaryPanel(
+            // Main note panel (full height)
+            ChatPanel(
                 appState: appState,
                 viewModel: viewModel,
                 selectedScreenshotId: $selectedScreenshotId
             )
-            .frame(maxWidth: .infinity) // Take remaining space
+            .frame(maxWidth: .infinity)
             
-            // Right Sidebar - Timeline
-            if isSidebarVisible {
+            // Right: Screenshots panel (toggleable)
+            if isScreenshotPanelVisible {
                 Divider()
                     .background(Color.themeDivider)
                 
@@ -174,8 +223,8 @@ struct SessionContentView: View {
                     viewModel: viewModel,
                     selectedScreenshotId: $selectedScreenshotId
                 )
-                .frame(width: sidebarWidth)
-                .transition(.move(edge: .trailing))
+                .frame(width: screenshotPanelWidth)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .task {
@@ -209,28 +258,34 @@ struct SessionContentView: View {
     }
 }
 
-
-
 struct NoSessionView: View {
     @ObservedObject var appState: AppState
 
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "folder.badge.plus")
+            Image(systemName: "bubble.left.and.text.bubble.right")
                 .font(.system(size: 60))
                 .foregroundStyle(Color.themeSecondary)
 
-            Text("No Session Selected")
-                .font(.title2)
+            Text("Welcome to Relay it!")
+                .font(.title2.bold())
+                .foregroundStyle(Color.themeText)
+
+            Text("Start a new chat to begin capturing and analyzing")
                 .foregroundStyle(Color.themeTextSecondary)
 
-            Text("Create a new session to get started")
-                .foregroundStyle(Color.themeTextTertiary)
-
-            Button("Create Session") {
+            Button(action: {
                 Task {
                     await appState.createSession(name: "New Session")
                 }
+            }) {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus")
+                    Text("New Session")
+                }
+                .font(.body.weight(.semibold))
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
             }
             .buttonStyle(.borderedProminent)
             .tint(Color.themeAccent)

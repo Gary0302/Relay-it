@@ -1,12 +1,25 @@
-# Chat API 文件
+# Chat API v2
 
-## 端點
+## Endpoint
 
 ```
 POST /api/chat
 ```
 
-## 請求格式 (Request)
+## What changed from v1
+
+| Change | v1 | v2 |
+|--------|----|----|
+| Conversation history | Not sent (stateless) | Last 20 messages sent for multi-turn context |
+| Entities | Not included | Structured entities included in context |
+| Response intent | None | `intent` field classifies AI action |
+| Note updates | Full note replacement (`updatedNote`) | Structured `noteOperation` with append/replace |
+| Referenced screenshots | Not returned | `referencedScreenshots` IDs returned |
+| Follow-up suggestions | None | `suggestedFollowUps` array returned |
+
+---
+
+## Request
 
 ### ChatRequest
 
@@ -14,6 +27,10 @@ POST /api/chat
 {
   "sessionId": "string (UUID)",
   "userMessage": "string",
+  "conversationHistory": [
+    { "role": "user", "content": "string" },
+    { "role": "assistant", "content": "string" }
+  ],
   "currentNote": "string",
   "context": {
     "screenshots": [
@@ -23,111 +40,343 @@ POST /api/chat
         "summary": "string"
       }
     ],
+    "entities": [
+      {
+        "type": "string",
+        "title": "string | null",
+        "attributes": { "key": "value" }
+      }
+    ],
     "sessionName": "string | null",
     "sessionCategory": "string | null"
   }
 }
 ```
 
-### 欄位說明
+### Field Reference
 
-| 欄位 | 類型 | 必填 | 說明 |
-|------|------|------|------|
-| `sessionId` | string | ✅ | Session 的 UUID |
-| `userMessage` | string | ✅ | 使用者輸入的訊息 |
-| `currentNote` | string | ✅ | 目前筆記的內容 |
-| `context` | object | ❌ | 上下文資訊（可為 null） |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sessionId` | string | Yes | Session UUID |
+| `userMessage` | string | Yes | Current user message |
+| `conversationHistory` | array | No | Previous messages (last 20 turns) for multi-turn context |
+| `currentNote` | string | Yes | Full markdown content of the user's note |
+| `context` | object | No | Session context (screenshots, entities, metadata) |
 
-### Context 物件
+### conversationHistory
 
-| 欄位 | 類型 | 必填 | 說明 |
-|------|------|------|------|
-| `screenshots` | array | ❌ | 截圖資訊陣列 |
-| `sessionName` | string | ❌ | Session 名稱 |
-| `sessionCategory` | string | ❌ | Session 類別 |
+Array of previous messages ordered chronologically. Include the last 20 messages (10 user + 10 assistant turns). This enables the AI to understand references like "tell me more about that" or "compare the first two".
 
-### ChatScreenshot 物件
+| Field | Type | Description |
+|-------|------|-------------|
+| `role` | string | `"user"` or `"assistant"` |
+| `content` | string | Message text |
 
-| 欄位 | 類型 | 必填 | 說明 |
-|------|------|------|------|
-| `id` | string | ✅ | 截圖的 UUID |
-| `rawText` | string | ✅ | 截圖的原始文字 (OCR) |
-| `summary` | string | ✅ | 截圖的摘要 |
+### context.screenshots
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Screenshot UUID |
+| `rawText` | string | OCR-extracted text from the screenshot |
+| `summary` | string | AI-generated summary of the screenshot |
+
+### context.entities
+
+Structured data extracted from screenshots. Providing this lets the AI reason about structured attributes (prices, ratings, dates) rather than only raw text.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Entity type (e.g. `"product"`, `"hotel"`, `"job-listing"`) |
+| `title` | string or null | Entity display name |
+| `attributes` | object | Key-value pairs of extracted data |
+
+### context metadata
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sessionName` | string or null | Current session name |
+| `sessionCategory` | string or null | Session category (e.g. `"shopping"`, `"research"`) |
 
 ---
 
-## 回應格式 (Response)
+## Response
 
 ### ChatResponse
 
 ```json
 {
   "reply": "string",
-  "updatedNote": "string | null",
-  "noteWasModified": true | false
+  "intent": "answer | modify_note | summarize | compare | recommend",
+  "noteOperation": {
+    "type": "append | replace | no_change",
+    "content": "string | null",
+    "section": "string | null"
+  },
+  "referencedScreenshots": ["uuid1", "uuid2"],
+  "suggestedFollowUps": ["Compare prices", "Add this to my note"]
 }
 ```
 
-### 欄位說明
+### Field Reference
 
-| 欄位 | 類型 | 說明 |
-|------|------|------|
-| `reply` | string | AI 的回覆訊息 |
-| `updatedNote` | string \| null | 更新後的筆記內容（如果 AI 修改了筆記） |
-| `noteWasModified` | boolean | 表示筆記是否被 AI 修改 |
+| Field | Type | Description |
+|-------|------|-------------|
+| `reply` | string | AI response text displayed in chat |
+| `intent` | string or null | What the AI did -- used by client for rendering |
+| `noteOperation` | object or null | Structured note modification (replaces v1 `noteWasModified` + `updatedNote`) |
+| `referencedScreenshots` | array or null | Screenshot UUIDs the AI referenced in its answer |
+| `suggestedFollowUps` | array or null | Quick-reply suggestions for the user |
+
+### intent values
+
+| Value | Meaning | Client behavior |
+|-------|---------|-----------------|
+| `answer` | Answered a question | Standard chat bubble |
+| `modify_note` | Modified the user's note | Show note-update inline block |
+| `summarize` | Generated a summary | Show summary card in chat |
+| `compare` | Compared items | Highlight referenced screenshots |
+| `recommend` | Made a recommendation | Show as recommendation card |
+
+### noteOperation
+
+Replaces the v1 pattern of sending back the entire note. More efficient and enables partial updates.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | `"append"` (add to end), `"replace"` (replace entire note), `"no_change"` |
+| `content` | string or null | The new/changed markdown content (null when `type` is `"no_change"`) |
+| `section` | string or null | Optional section heading to target (e.g. `"## Summary"`) |
+
+**Client-side logic:**
+- `append`: Append `content` to the current note (with `\n\n` separator)
+- `replace`: Replace the entire note with `content`
+- `no_change`: Do nothing to the note
 
 ---
 
-## 使用範例
+## Examples
 
-### 請求範例
+### 1. Simple question (multi-turn)
+
+**Request:**
 
 ```json
 {
   "sessionId": "550e8400-e29b-41d4-a716-446655440000",
-  "userMessage": "幫我總結這個 session 的重點",
-  "currentNote": "# 我的筆記\n\n- 第一點\n- 第二點",
+  "userMessage": "Which one has the best rating?",
+  "conversationHistory": [
+    { "role": "user", "content": "Show me a comparison of these products" },
+    { "role": "assistant", "content": "Here are the 3 products from your screenshots:\n1. iPhone 16 - $999, 4.5 stars\n2. Pixel 9 - $899, 4.3 stars\n3. Galaxy S25 - $949, 4.4 stars" }
+  ],
+  "currentNote": "",
   "context": {
     "screenshots": [
       {
-        "id": "123e4567-e89b-12d3-a456-426614174000",
-        "rawText": "這是從截圖中提取的文字內容...",
-        "summary": "這是一個關於產品比較的截圖"
+        "id": "aaa-111",
+        "rawText": "iPhone 16 Pro...",
+        "summary": "Apple iPhone 16 product page"
       }
     ],
-    "sessionName": "產品研究",
+    "entities": [
+      {
+        "type": "product",
+        "title": "iPhone 16",
+        "attributes": { "price": "$999", "rating": "4.5" }
+      },
+      {
+        "type": "product",
+        "title": "Pixel 9",
+        "attributes": { "price": "$899", "rating": "4.3" }
+      }
+    ],
+    "sessionName": "Phone Research",
     "sessionCategory": "shopping"
   }
 }
 ```
 
-### 回應範例 - AI 回答問題
+**Response:**
 
 ```json
 {
-  "reply": "根據您的截圖，這個 session 的重點包括：\n1. 比較了三款產品的價格\n2. 功能差異分析\n3. 使用者評價比較",
-  "updatedNote": null,
-  "noteWasModified": false
+  "reply": "The iPhone 16 has the best rating at 4.5 stars, though it's also the most expensive at $999. The Galaxy S25 is a close second at 4.4 stars for $949.",
+  "intent": "compare",
+  "noteOperation": {
+    "type": "no_change",
+    "content": null,
+    "section": null
+  },
+  "referencedScreenshots": ["aaa-111"],
+  "suggestedFollowUps": [
+    "Add this comparison to my note",
+    "Which has the best value for money?",
+    "Summarize all products"
+  ]
 }
 ```
 
-### 回應範例 - AI 修改筆記
+### 2. Note modification
+
+**Request:**
 
 ```json
 {
-  "reply": "好的，我已經幫您更新筆記了！",
-  "updatedNote": "# 我的筆記\n\n- 第一點\n- 第二點\n\n## AI 總結\n\n這是新增的內容...",
-  "noteWasModified": true
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "userMessage": "Add a summary of my research to the note",
+  "conversationHistory": [],
+  "currentNote": "# Phone Research\n\nLooking at new phones.",
+  "context": {
+    "entities": [
+      {
+        "type": "product",
+        "title": "iPhone 16",
+        "attributes": { "price": "$999", "rating": "4.5" }
+      }
+    ],
+    "sessionName": "Phone Research",
+    "sessionCategory": "shopping"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "reply": "I've added a research summary to your note with key findings and a comparison table.",
+  "intent": "modify_note",
+  "noteOperation": {
+    "type": "append",
+    "content": "## Research Summary\n\n| Phone | Price | Rating |\n|-------|-------|--------|\n| iPhone 16 | $999 | 4.5 |\n\n**Key Finding:** The iPhone 16 leads in ratings but is the most expensive option.",
+    "section": null
+  },
+  "referencedScreenshots": [],
+  "suggestedFollowUps": [
+    "What else should I consider?",
+    "Compare with budget options"
+  ]
+}
+```
+
+### 3. First message (no history)
+
+**Request:**
+
+```json
+{
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "userMessage": "What have I captured so far?",
+  "conversationHistory": [],
+  "currentNote": "",
+  "context": {
+    "screenshots": [
+      {
+        "id": "aaa-111",
+        "rawText": "Marriott Downtown - $199/night...",
+        "summary": "Hotel booking page for Marriott"
+      },
+      {
+        "id": "bbb-222",
+        "rawText": "Hilton Garden Inn - $159/night...",
+        "summary": "Hotel booking page for Hilton"
+      }
+    ],
+    "entities": [
+      {
+        "type": "hotel",
+        "title": "Marriott Downtown",
+        "attributes": { "price": "$199/night", "rating": "4.5" }
+      },
+      {
+        "type": "hotel",
+        "title": "Hilton Garden Inn",
+        "attributes": { "price": "$159/night", "rating": "4.2" }
+      }
+    ],
+    "sessionName": "Trip Planning",
+    "sessionCategory": "trip-planning"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "reply": "You've captured 2 hotel options:\n\n1. **Marriott Downtown** - $199/night (4.5 stars)\n2. **Hilton Garden Inn** - $159/night (4.2 stars)\n\nThe Marriott is pricier but higher rated. The Hilton is $40/night cheaper.",
+  "intent": "summarize",
+  "noteOperation": {
+    "type": "no_change",
+    "content": null,
+    "section": null
+  },
+  "referencedScreenshots": ["aaa-111", "bbb-222"],
+  "suggestedFollowUps": [
+    "Which hotel has the best value?",
+    "Add this comparison to my note",
+    "What should I look for in a hotel?"
+  ]
 }
 ```
 
 ---
 
-## Swift 結構定義
+## Backend Implementation Notes
+
+### System prompt guidance
+
+The backend should instruct the AI to:
+1. Always classify its `intent` based on what the user asked
+2. Only set `noteOperation.type` to `"append"` or `"replace"` when the user explicitly asks to modify the note
+3. Return `referencedScreenshots` as the IDs of screenshots it drew information from
+4. Generate 2-3 `suggestedFollowUps` that are contextually relevant
+5. Use `conversationHistory` to maintain coherent multi-turn dialogue
+6. Use `entities` for structured reasoning (comparisons, rankings) rather than parsing raw OCR text
+
+### Token budget
+
+To manage token limits:
+- `conversationHistory`: Cap at 20 messages. If more exist, send the most recent 20.
+- `context.screenshots`: Send all, but truncate `rawText` to 2000 chars each if needed.
+- `context.entities`: Send all entities (they're compact).
+- `currentNote`: Send full note (usually small).
+
+### Backward compatibility
+
+The backend should accept both v1 and v2 requests:
+- If `conversationHistory` is missing, treat as empty (stateless).
+- If response fields `intent`, `noteOperation`, `suggestedFollowUps` are missing, the client falls back to v1 behavior (`noteWasModified` + `updatedNote`).
+
+---
+
+## Error Handling
+
+| Status Code | Description |
+|-------------|-------------|
+| 200 | Success |
+| 400 | Bad request (malformed JSON, missing required fields) |
+| 429 | Rate limited |
+| 500 | Server error (AI provider failure, etc.) |
+
+---
+
+## Swift Types
 
 ```swift
+struct ChatHistoryMessage: Codable {
+    let role: String
+    let content: String
+}
+
+struct ChatEntity: Encodable {
+    let type: String
+    let title: String?
+    let attributes: [String: String]
+}
+
 struct ChatContext: Encodable {
     let screenshots: [ChatScreenshot]?
+    let entities: [ChatEntity]?
     let sessionName: String?
     let sessionCategory: String?
 }
@@ -141,34 +390,25 @@ struct ChatScreenshot: Encodable {
 struct ChatRequest: Encodable {
     let sessionId: String
     let userMessage: String
+    let conversationHistory: [ChatHistoryMessage]?
     let currentNote: String
     let context: ChatContext?
 }
 
+struct NoteOperation: Decodable {
+    let type: String      // "append", "replace", "no_change"
+    let content: String?
+    let section: String?
+}
+
 struct ChatResponse: Decodable {
     let reply: String
+    let intent: String?
+    let noteOperation: NoteOperation?
+    let referencedScreenshots: [String]?
+    let suggestedFollowUps: [String]?
+    // v1 backward compat
     let updatedNote: String?
-    let noteWasModified: Bool
+    let noteWasModified: Bool?
 }
 ```
-
----
-
-## 錯誤處理
-
-API 可能回傳以下 HTTP 狀態碼：
-
-| 狀態碼 | 說明 |
-|--------|------|
-| 200 | 成功 |
-| 400 | 請求格式錯誤 |
-| 500 | 伺服器內部錯誤 |
-
----
-
-## 注意事項
-
-1. `context` 欄位是可選的，但提供完整的上下文可以讓 AI 給出更精準的回答
-2. 當 `noteWasModified` 為 `true` 時，客戶端應該用 `updatedNote` 的內容更新本地筆記
-3. 請求超時時間設定為 60 秒，以配合 AI 分析所需時間
-
